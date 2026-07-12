@@ -1,7 +1,9 @@
 """Main application window: Variable List, Targets panel, and script export."""
 from __future__ import annotations
 
-from typing import List, Optional, Set
+import os
+import re
+from typing import List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -36,9 +38,10 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QKeySequence, QShortcut
 
 from aavso_client import FetchTargetsThread
+from database import Database
 from models import AAVSOTarget, ObservingTarget, SECTION_CODES
 from script_exporter import ScriptExporter
 from settings_dialog import SettingsDialog
@@ -245,8 +248,8 @@ class VariableFilterProxy(QSortFilterProxyModel):
 class TargetsModel(QAbstractTableModel):
     """Editable model for the observation plan target list."""
 
-    HEADERS = ["Name", "RA (h)", "Dec (°)", "Filter", "Count", "Interval (s)", "Binning"]
-    _EDITABLE = {3, 4, 5, 6}
+    HEADERS = ["Name", "RA (h)", "Dec (°)", "Const.", "Filter ✎", "Count ✎", "Interval (s) ✎", "Binning ✎"]
+    _EDITABLE = {4, 5, 6, 7}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -290,6 +293,26 @@ class TargetsModel(QAbstractTableModel):
         self._targets.sort(key=lambda t: t.aavso.ra)
         self.endResetModel()
 
+    def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
+        """Sort targets in-place by column (physical reorder; updates export order)."""
+        reverse = order == Qt.DescendingOrder
+        key_funcs = {
+            0: lambda t: t.aavso.star_name.lower(),
+            1: lambda t: t.aavso.ra,
+            2: lambda t: t.aavso.dec,
+            3: lambda t: t.aavso.constellation.lower(),
+            4: lambda t: t.script_filters.lower(),
+            5: lambda t: t.script_counts.lower(),
+            6: lambda t: t.script_intervals.lower(),
+            7: lambda t: t.script_binning.lower(),
+        }
+        key = key_funcs.get(column)
+        if key is None:
+            return
+        self.beginResetModel()
+        self._targets.sort(key=key, reverse=reverse)
+        self.endResetModel()
+
     def move_up(self, row: int) -> None:
         if row <= 0:
             return
@@ -320,8 +343,12 @@ class TargetsModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.HEADERS)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.HEADERS[section]
+        if orientation == Qt.Horizontal:
+            if role == Qt.DisplayRole:
+                return self.HEADERS[section]
+            if role == Qt.ToolTipRole:
+                if section in self._EDITABLE:
+                    return "Double-click or press F2 to edit"
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
@@ -344,23 +371,29 @@ class TargetsModel(QAbstractTableModel):
             elif col == 2:
                 return f"{ot.aavso.dec:+.6f}"
             elif col == 3:
-                return ot.script_filters
+                return ot.aavso.constellation
             elif col == 4:
-                return ot.script_counts
+                return ot.script_filters
             elif col == 5:
-                return ot.script_intervals
+                return ot.script_counts
             elif col == 6:
+                return ot.script_intervals
+            elif col == 7:
                 return ot.script_binning
+
+        elif role == Qt.BackgroundRole:
+            if col in self._EDITABLE:
+                return QBrush(QColor("#fdfaed"))  # soft cream tint for editable cells
 
         elif role == Qt.ToolTipRole:
             t = ot.aavso
-            if col <= 2:
+            if col <= 3:
                 return (
-                    f"{t.var_type}  |  {t.constellation}  |  "
+                    f"{t.var_type}  |  "
                     f"Max: {t.max_mag} {t.max_mag_band}  "
                     f"Min: {t.min_mag} {t.min_mag_band}"
                 )
-            return "Click to edit"
+            return "Double-click or press F2 to edit"
 
         return None
 
@@ -370,13 +403,13 @@ class TargetsModel(QAbstractTableModel):
         ot = self._targets[index.row()]
         val = str(value).strip()
         col = index.column()
-        if col == 3:
+        if col == 4:
             ot.script_filters = val
-        elif col == 4:
-            ot.script_counts = val
         elif col == 5:
-            ot.script_intervals = val
+            ot.script_counts = val
         elif col == 6:
+            ot.script_intervals = val
+        elif col == 7:
             ot.script_binning = val
         else:
             return False
@@ -426,246 +459,165 @@ class ScriptPreviewDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Import-from-text dialog
+# Target file parser (module-level helpers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ImportTextDialog(QDialog):
-    """Paste a tab-separated variable star list and import it into the plan.
+def _split_fields(line: str) -> List[str]:
+    """Split a line into [Name, Coords, Type, Mag] using the best available strategy.
 
-    Expected column order (tab-separated, header row optional):
-        Name  |  Coords                    |  Type  |  Mag
-        Z And |  23 33 39.95 +48 49 05.9  |  ZAND  |  7.7 - 11.3 V
-
-    Coordinates must be sexagesimal J2000: HH MM SS.ss ±DD MM SS.s
+    Tries in order:
+    1. Tab characters  (true TSV / Excel copy)
+    2. Two-or-more consecutive spaces  (most web-page copies)
+    3. Coord-pattern regex  (single-space separators or unusual formats)
     """
+    # Strategy 1 – tabs
+    fields = line.split("\t")
+    if len(fields) >= 2:
+        return [f.strip() for f in fields]
 
-    _PLACEHOLDER = (
-        "Name\tCoords\tType\tMag\n"
-        "Z And\t23 33 39.95 +48 49 05.9\tZAND\t7.7 - 11.3 V\n"
-        "SS Cyg\t21 42 42.80 +43 35 09.9\tUGSS\t7.7 - 12.4 V"
+    # Strategy 2 – 2+ spaces
+    fields = re.split(r"  +", line)
+    if len(fields) >= 2:
+        return [f.strip() for f in fields]
+
+    # Strategy 3 – detect the sexagesimal coordinate block and split around it
+    m = re.match(
+        r"^(.+?)\s+"
+        r"(\d{1,2} \d{2} \d{2}[.,]\d+\s+[+\-]\d{1,2} \d{2} \d{2}[.,]?\d*)"
+        r"\s+(\S+)"
+        r"\s+(.+)$",
+        line,
     )
+    if m:
+        return [m.group(1).strip(), m.group(2).strip(),
+                m.group(3).strip(), m.group(4).strip()]
 
-    def __init__(
-        self,
-        default_filters: str,
-        default_counts: str,
-        default_intervals: str,
-        default_binning: str,
-        parent=None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Import Variables from Text")
-        self.resize(720, 500)
-        self._defaults = (default_filters, default_counts, default_intervals, default_binning)
-        self._parsed: List[ObservingTarget] = []
-        self._build_ui()
+    return [line]
 
-    # ── UI ───────────────────────────────────────────────────────────────────
 
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+def _parse_coord(coord_str: str) -> Tuple[float, float]:
+    """Convert sexagesimal 'HH MM SS.ss ±DD MM SS.s' to (ra_deg, dec_deg)."""
+    if not coord_str:
+        raise ValueError("coordinate field is empty")
 
-        instr = QLabel(
-            "Paste <b>tab-separated</b> data with columns: "
-            "<b>Name</b> &nbsp;|&nbsp; <b>Coords</b> &nbsp;|&nbsp; "
-            "<b>Type</b> &nbsp;|&nbsp; <b>Mag</b><br>"
-            "Coordinates: &nbsp;<code>HH MM SS.ss &nbsp;±DD MM SS.s</code>&nbsp; "
-            "(sexagesimal J2000).&nbsp; A header row is skipped automatically."
+    # Collapse any space between a sign character and its digits
+    coord_str = re.sub(r'([+-])\s+(\d)', r'\1\2', coord_str)
+    parts = coord_str.split()
+
+    if len(parts) < 6:
+        raise ValueError(
+            f"expected 6 tokens (HH MM SS.ss \u00b1DD MM SS.s), "
+            f"got {len(parts)}: {coord_str!r}"
         )
-        instr.setTextFormat(Qt.RichText)
-        instr.setWordWrap(True)
-        layout.addWidget(instr)
 
-        mono = QFont("Consolas", 9)
-        mono.setStyleHint(QFont.Monospace)
+    try:
+        ra_h, ra_m, ra_s = float(parts[0]), float(parts[1]), float(parts[2])
+    except ValueError:
+        raise ValueError(f"non-numeric RA in {coord_str!r}")
 
-        self._text_edit = QTextEdit()
-        self._text_edit.setPlaceholderText(self._PLACEHOLDER)
-        self._text_edit.setFont(mono)
-        layout.addWidget(self._text_edit, 1)
+    if not (0.0 <= ra_h < 24.0):
+        raise ValueError(
+            f"RA hours out of range ({ra_h}); "
+            "did you paste degrees instead of hours?"
+        )
 
-        # Parse button + status label
-        parse_row = QHBoxLayout()
-        parse_btn = QPushButton("Parse")
-        parse_btn.setToolTip("Parse the pasted text and check for errors")
-        parse_btn.clicked.connect(self._do_parse)
-        parse_row.addWidget(parse_btn)
-        self._status_lbl = QLabel("Paste data above and click Parse.")
-        self._status_lbl.setTextFormat(Qt.RichText)
-        parse_row.addWidget(self._status_lbl, 1)
-        layout.addLayout(parse_row)
+    ra_deg = (ra_h + ra_m / 60.0 + ra_s / 3600.0) * 15.0
 
-        # Error/detail output (hidden until needed)
-        self._detail_edit = QTextEdit()
-        self._detail_edit.setReadOnly(True)
-        self._detail_edit.setMaximumHeight(110)
-        self._detail_edit.setFont(mono)
-        self._detail_edit.setVisible(False)
-        layout.addWidget(self._detail_edit)
+    try:
+        dec_raw = parts[3]
+        negative = dec_raw.startswith("-")
+        dec_d = abs(float(dec_raw))
+        dec_m, dec_s = float(parts[4]), float(parts[5])
+    except ValueError:
+        raise ValueError(f"non-numeric Dec in {coord_str!r}")
 
-        # OK / Cancel
-        self._add_btn = QPushButton("Add to Plan")
-        self._add_btn.setEnabled(False)
-        self._add_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
+    dec_deg = dec_d + dec_m / 60.0 + dec_s / 3600.0
+    if negative:
+        dec_deg = -dec_deg
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_row.addWidget(self._add_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+    return ra_deg, dec_deg
 
-    # ── Parsing ───────────────────────────────────────────────────────────────
 
-    def _do_parse(self) -> None:
-        targets, errors = self._parse_text(self._text_edit.toPlainText())
-        self._parsed = targets
+def _parse_mag(mag_str: str) -> Tuple[Optional[float], Optional[float], str]:
+    """Parse '7.7 - 11.3 V' → (max_mag, min_mag, band).  Lenient."""
+    if not mag_str:
+        return None, None, ""
+    m = re.match(r'([\d.]+)\s*(?:-\s*([\d.]+))?\s*([A-Za-z]*)', mag_str.strip())
+    if not m:
+        return None, None, ""
+    max_mag = float(m.group(1))
+    min_mag = float(m.group(2)) if m.group(2) else max_mag
+    band = m.group(3).strip()
+    return max_mag, min_mag, band
 
-        if targets:
-            self._status_lbl.setText(
-                f"<span style='color: green;'>&#10003; "
-                f"{len(targets)} target(s) ready to add.</span>"
-                + (f" &nbsp;<span style='color: #b87820;'>"
-                   f"{len(errors)} row(s) skipped.</span>" if errors else "")
-            )
-            self._add_btn.setText(f"Add {len(targets)} Target(s) to Plan")
-            self._add_btn.setEnabled(True)
-        else:
-            self._status_lbl.setText(
-                "<span style='color: red;'>No valid targets found. "
-                "Check errors below.</span>"
-            )
-            self._add_btn.setEnabled(False)
 
-        if errors:
-            self._detail_edit.setPlainText("\n".join(errors))
-            self._detail_edit.setVisible(True)
-        else:
-            self._detail_edit.setVisible(False)
+def _parse_target_text(
+    text: str,
+    defaults: Tuple[str, str, str, str],
+) -> Tuple[List[ObservingTarget], List[str]]:
+    """Parse a tab/space-separated text block into ObservingTargets.
 
-        self.adjustSize()
+    Returns ``(targets, error_messages)``.
+    """
+    default_filters, default_counts, default_intervals, default_binning = defaults
+    targets: List[ObservingTarget] = []
+    errors: List[str] = []
 
-    def get_targets(self) -> List[ObservingTarget]:
-        return list(self._parsed)
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
 
-    # ── Static helpers ────────────────────────────────────────────────────────
+        fields = _split_fields(line)
+        name = fields[0].strip()
 
-    def _parse_text(
-        self, text: str
-    ) -> tuple:   # (List[ObservingTarget], List[str])
-        """Parse all lines and return (targets, error_messages)."""
-        import re
+        # Skip header rows
+        if name.lower() in ("name", "star", "target", "object", "variable"):
+            continue
 
-        default_filters, default_counts, default_intervals, default_binning = self._defaults
-        targets: List[ObservingTarget] = []
-        errors: List[str] = []
+        if len(fields) < 2:
+            errors.append(f"Line {lineno}: could not identify columns — skipped")
+            continue
 
-        for lineno, raw in enumerate(text.splitlines(), start=1):
-            line = raw.strip()
-            if not line:
-                continue
+        coord_str = fields[1].strip() if len(fields) > 1 else ""
+        type_str  = fields[2].strip() if len(fields) > 2 else ""
+        mag_str   = fields[3].strip() if len(fields) > 3 else ""
 
-            fields = line.split("\t")
-
-            # Skip header-like rows (first non-empty line with no digits in col 0)
-            name = fields[0].strip()
-            if name.lower() in ("name", "star", "target", "object", "variable"):
-                continue
-
-            if len(fields) < 2:
-                errors.append(f"Line {lineno}: too few tab-separated columns — skipped")
-                continue
-
-            coord_str = fields[1].strip() if len(fields) > 1 else ""
-            type_str  = fields[2].strip() if len(fields) > 2 else ""
-            mag_str   = fields[3].strip() if len(fields) > 3 else ""
-
-            try:
-                ra_deg, dec_deg = self._parse_coord(coord_str)
-            except ValueError as exc:
-                errors.append(f"Line {lineno} ({name!r}): {exc}")
-                continue
-
-            max_mag, min_mag, band = self._parse_mag(mag_str)
-
-            aavso = AAVSOTarget(
-                star_name=name,
-                ra=ra_deg,
-                dec=dec_deg,
-                var_type=type_str,
-                max_mag=max_mag,
-                max_mag_band=band,
-                min_mag=min_mag,
-                min_mag_band=band,
-            )
-            targets.append(
-                ObservingTarget(
-                    aavso=aavso,
-                    script_filters=default_filters,
-                    script_counts=default_counts,
-                    script_intervals=default_intervals,
-                    script_binning=default_binning,
-                )
-            )
-
-        return targets, errors
-
-    @staticmethod
-    def _parse_coord(coord_str: str) -> tuple:   # (ra_deg, dec_deg)
-        """Convert sexagesimal 'HH MM SS.ss ±DD MM SS.s' to decimal degrees."""
-        import re
-
-        if not coord_str:
-            raise ValueError("coordinate field is empty")
-
-        # Collapse any space between a sign character and its digits
-        coord_str = re.sub(r'([+-])\s+(\d)', r'\1\2', coord_str)
-        parts = coord_str.split()
-
-        if len(parts) < 6:
-            raise ValueError(
-                f"expected 6 tokens (HH MM SS.ss \u00b1DD MM SS.s), got {len(parts)}: {coord_str!r}"
-            )
+        # The name is "<designation> <Const>" (e.g. "Z And", "V0603 Aql").
+        # Split off the last word as the constellation abbreviation.
+        name_parts = name.rsplit(None, 1)
+        constellation = name_parts[-1] if len(name_parts) > 1 else ""
 
         try:
-            ra_h, ra_m, ra_s = float(parts[0]), float(parts[1]), float(parts[2])
-        except ValueError:
-            raise ValueError(f"non-numeric RA in {coord_str!r}")
+            ra_deg, dec_deg = _parse_coord(coord_str)
+        except ValueError as exc:
+            errors.append(f"Line {lineno} ({name!r}): {exc}")
+            continue
 
-        if not (0.0 <= ra_h < 24.0):
-            raise ValueError(f"RA hours out of range ({ra_h}); did you paste degrees instead of hours?")
+        max_mag, min_mag, band = _parse_mag(mag_str)
 
-        ra_deg = (ra_h + ra_m / 60.0 + ra_s / 3600.0) * 15.0
+        aavso = AAVSOTarget(
+            star_name=name,
+            ra=ra_deg,
+            dec=dec_deg,
+            var_type=type_str,
+            max_mag=max_mag,
+            max_mag_band=band,
+            min_mag=min_mag,
+            min_mag_band=band,
+            constellation=constellation,
+        )
+        targets.append(
+            ObservingTarget(
+                aavso=aavso,
+                script_filters=default_filters,
+                script_counts=default_counts,
+                script_intervals=default_intervals,
+                script_binning=default_binning,
+            )
+        )
 
-        try:
-            dec_raw = parts[3]
-            negative = dec_raw.startswith("-")
-            dec_d = abs(float(dec_raw))
-            dec_m, dec_s = float(parts[4]), float(parts[5])
-        except ValueError:
-            raise ValueError(f"non-numeric Dec in {coord_str!r}")
-
-        dec_deg = dec_d + dec_m / 60.0 + dec_s / 3600.0
-        if negative:
-            dec_deg = -dec_deg
-
-        return ra_deg, dec_deg
-
-    @staticmethod
-    def _parse_mag(mag_str: str) -> tuple:   # (max_mag, min_mag, band)
-        """Parse '7.7 - 11.3 V' \u2192 (max_mag, min_mag, band). Lenient."""
-        import re
-
-        if not mag_str:
-            return None, None, ""
-        m = re.match(r'([\d.]+)\s*(?:-\s*([\d.]+))?\s*([A-Za-z]*)', mag_str.strip())
-        if not m:
-            return None, None, ""
-        max_mag = float(m.group(1))
-        min_mag = float(m.group(2)) if m.group(2) else max_mag
-        band = m.group(3).strip()
-        return max_mag, min_mag, band
+    return targets, errors
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -679,7 +631,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = SettingsManager()
         self.exporter = ScriptExporter()
+        self._db = Database()
         self._fetch_thread: Optional[FetchTargetsThread] = None
+        self._loading_plan = False   # suppress auto-save during initial load
 
         self.setWindowTitle("VSTarget – AAVSO Variable Star Observation Planner")
         self.resize(1280, 800)
@@ -694,9 +648,42 @@ class MainWindow(QMainWindow):
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage(
-            f"Ready  |  Telescope: {self.settings.telescope_name}"
-        )
+
+        # Restore plan saved in previous session
+        self._loading_plan = True
+        saved = self._db.load_plan()
+        if saved:
+            self._tgt_model.set_targets(saved)
+        self._loading_plan = False
+
+        # Auto-save on every change to the targets model
+        self._tgt_model.dataChanged.connect(self._autosave_plan)
+        self._tgt_model.rowsInserted.connect(self._autosave_plan)
+        self._tgt_model.rowsRemoved.connect(self._autosave_plan)
+        self._tgt_model.modelReset.connect(self._autosave_plan)
+
+        # Summary counter – incremental updates where possible.
+        # rowsAboutToBeRemoved fires while the rows are still in the model,
+        # so we can subtract their exposure before they disappear.
+        self._summary_count: int = 0
+        self._summary_sec: float = 0.0
+        self._tgt_model.rowsAboutToBeRemoved.connect(self._on_targets_about_to_remove)
+        self._tgt_model.rowsInserted.connect(self._on_targets_inserted)
+        self._tgt_model.dataChanged.connect(self._recalc_target_summary)
+        self._tgt_model.modelReset.connect(self._recalc_target_summary)
+        self._recalc_target_summary()  # initial value (includes restored targets)
+
+        # Persistent DB path indicator in the status bar
+        db_lbl = QLabel()
+        db_lbl.setText("✓ DB")
+        db_lbl.setToolTip(f"Plan database: {self._db.path}")
+        db_lbl.setStyleSheet("color: gray; font-size: 11px; padding: 0 6px;")
+        self._status.addPermanentWidget(db_lbl)
+
+        msg = f"Ready  |  Telescope: {self.settings.telescope_name}"
+        if saved:
+            msg += f"  |  {len(saved)} target(s) restored from previous session"
+        self._status.showMessage(msg)
 
     # ── Menu bar ─────────────────────────────────────────────────────────────
 
@@ -704,10 +691,10 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
 
         file_menu = mb.addMenu("&File")
-        import_act = QAction("&Import Variables from Text…", self)
+        import_act = QAction("&Import from File…", self)
         import_act.setShortcut(QKeySequence("Ctrl+I"))
-        import_act.setToolTip("Paste a tab-separated variable star list to add to the plan")
-        import_act.triggered.connect(self._import_from_text)
+        import_act.setToolTip("Import variable star targets from a .txt or .tsv file")
+        import_act.triggered.connect(self._import_from_file)
         file_menu.addAction(import_act)
 
         file_menu.addSeparator()
@@ -911,14 +898,9 @@ class MainWindow(QMainWindow):
         clear_btn.setToolTip("Remove all targets from the plan")
         clear_btn.clicked.connect(self._clear_targets)
 
-        sort_btn = QPushButton("⇅ Sort by RA")
-        sort_btn.setToolTip("Sort the plan by Right Ascension (ascending)")
-        sort_btn.clicked.connect(self._sort_targets_by_ra)
-
         for w in (move_up_btn, move_dn_btn, remove_btn, clear_btn):
             btn_row.addWidget(w)
         btn_row.addStretch()
-        btn_row.addWidget(sort_btn)
         layout.addLayout(btn_row)
 
         # Target table
@@ -929,10 +911,41 @@ class MainWindow(QMainWindow):
         self._tgt_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._tgt_table.setAlternatingRowColors(True)
         self._tgt_table.verticalHeader().setVisible(False)
-        self._tgt_table.horizontalHeader().setStretchLastSection(True)
-        for col, width in [(0, 130), (1, 90), (2, 90), (3, 90), (4, 60), (5, 80)]:
+        hh = self._tgt_table.horizontalHeader()
+        hh.setStretchLastSection(True)
+        hh.setSectionsClickable(True)
+        hh.setSortIndicatorShown(True)
+        hh.sectionClicked.connect(self._on_target_header_clicked)
+        # Track sort state explicitly so the toggle is not confused by the
+        # header's default indicator (which defaults to col 0 / Ascending).
+        self._tgt_sort_col: int = -1
+        self._tgt_sort_order: Qt.SortOrder = Qt.AscendingOrder
+        # Allow editing via double-click, F2, or just starting to type
+        self._tgt_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.EditKeyPressed
+            | QAbstractItemView.AnyKeyPressed
+        )
+        self._tgt_table.doubleClicked.connect(self._on_target_double_clicked)
+        # Delete key removes selected rows; WidgetShortcut ensures it does
+        # not fire while a cell editor (QLineEdit) has focus.
+        _del_sc = QShortcut(QKeySequence(Qt.Key_Delete), self._tgt_table)
+        _del_sc.setContext(Qt.WidgetShortcut)
+        _del_sc.activated.connect(self._remove_selected_targets)
+        for col, width in [(0, 130), (1, 80), (2, 80), (3, 46), (4, 100), (5, 65), (6, 85)]:
             self._tgt_table.setColumnWidth(col, width)
         layout.addWidget(self._tgt_table)
+
+        hint_lbl = QLabel(
+            "\u270e  Click a row to select, then double-click or press F2 / type to edit "
+            "Filter\u2009\u00b7\u2009Count\u2009\u00b7\u2009Interval\u2009\u00b7\u2009Binning"
+        )
+        hint_lbl.setStyleSheet("color: gray; font-size: 11px; padding: 1px 0;")
+        layout.addWidget(hint_lbl)
+
+        self._tgt_summary_lbl = QLabel("0 targets  │  Total exposure: —")
+        self._tgt_summary_lbl.setStyleSheet("font-size: 12px; padding: 2px 0;")
+        layout.addWidget(self._tgt_summary_lbl)
 
         # Script options group
         script_box = QGroupBox("Script Options")
@@ -1142,6 +1155,14 @@ class MainWindow(QMainWindow):
 
     # ── Managing targets ──────────────────────────────────────────────────────
 
+    def _on_target_double_clicked(self, index: QModelIndex) -> None:
+        """When a non-editable cell is double-clicked, redirect to the Filter column."""
+        if not (index.flags() & Qt.ItemIsEditable):
+            filter_col = min(TargetsModel._EDITABLE)   # column 3 = Filter
+            editable_idx = self._tgt_model.index(index.row(), filter_col)
+            self._tgt_table.setCurrentIndex(editable_idx)
+            self._tgt_table.edit(editable_idx)
+
     def _remove_selected_targets(self) -> None:
         rows = sorted(
             {idx.row() for idx in self._tgt_table.selectionModel().selectedRows()},
@@ -1163,16 +1184,34 @@ class MainWindow(QMainWindow):
             self._tgt_model.clear()
             self._status.showMessage("Observation plan cleared")
 
-    def _sort_targets_by_ra(self) -> None:
-        self._tgt_model.sort_by_ra()
-        self._status.showMessage("Targets sorted by RA (ascending)")
+    def _on_target_header_clicked(self, col: int) -> None:
+        """Toggle ASC/DESC sort on the clicked column and physically reorder the plan."""
+        if self._tgt_sort_col == col:
+            # Same column clicked again – flip the direction
+            self._tgt_sort_order = (
+                Qt.DescendingOrder
+                if self._tgt_sort_order == Qt.AscendingOrder
+                else Qt.AscendingOrder
+            )
+        else:
+            # New column – start ascending
+            self._tgt_sort_col = col
+            self._tgt_sort_order = Qt.AscendingOrder
+        self._tgt_table.horizontalHeader().setSortIndicator(col, self._tgt_sort_order)
+        self._tgt_model.sort(col, self._tgt_sort_order)
+        col_name = TargetsModel.HEADERS[col].replace(" ✎", "")
+        direction = "A→Z / low→high" if self._tgt_sort_order == Qt.AscendingOrder else "Z→A / high→low"
+        self._status.showMessage(f"Sorted by {col_name} ({direction})")
 
     def _move_target_up(self) -> None:
         rows = [idx.row() for idx in self._tgt_table.selectionModel().selectedRows()]
         if len(rows) == 1:
             row = rows[0]
             self._tgt_model.move_up(row)
-            self._tgt_table.selectRow(max(0, row - 1))
+            new_row = max(0, row - 1)
+            self._tgt_table.selectRow(new_row)
+            self._tgt_table.scrollTo(self._tgt_model.index(new_row, 0))
+            self._tgt_table.setFocus()
 
     def _move_target_down(self) -> None:
         rows = [idx.row() for idx in self._tgt_table.selectionModel().selectedRows()]
@@ -1180,7 +1219,10 @@ class MainWindow(QMainWindow):
             row = rows[0]
             n = self._tgt_model.rowCount()
             self._tgt_model.move_down(row)
-            self._tgt_table.selectRow(min(row + 1, n - 1))
+            new_row = min(row + 1, n - 1)
+            self._tgt_table.selectRow(new_row)
+            self._tgt_table.scrollTo(self._tgt_model.index(new_row, 0))
+            self._tgt_table.setFocus()
 
     def _apply_defaults_to_all(self) -> None:
         targets = self._tgt_model.get_targets()
@@ -1248,29 +1290,126 @@ class MainWindow(QMainWindow):
                 fh.write(self._build_script())
             self._status.showMessage(f"Script saved: {path}")
 
-    # ── Import from text ──────────────────────────────────────────────────────
+    # ── Database auto-save ───────────────────────────────────────────────────
 
-    def _import_from_text(self) -> None:
-        dlg = ImportTextDialog(
-            default_filters=self._def_filter.text().strip() or self.settings.default_filters,
-            default_counts=self._def_count.text().strip() or self.settings.default_counts,
-            default_intervals=self._def_interval.text().strip() or self.settings.default_intervals,
-            default_binning=self._def_binning.text().strip() or self.settings.default_binning,
-            parent=self,
+    def _autosave_plan(self, *_args) -> None:
+        """Persist the current targets list after every change."""
+        if self._loading_plan:
+            return
+        try:
+            self._db.save_plan(self._tgt_model.get_targets())
+        except Exception as exc:  # noqa: BLE001
+            self._status.showMessage(f"⚠ DB save failed: {exc}")
+
+    # ── Target summary counter ───────────────────────────────────────────────
+
+    @staticmethod
+    def _exposure_for_target(ot: ObservingTarget) -> float:
+        """Total shutter-open time (seconds) for one target: sum(count_i * interval_i)."""
+        counts: List[int] = []
+        for c in ot.script_counts.split(","):
+            try:
+                counts.append(int(c.strip()))
+            except ValueError:
+                counts.append(0)
+        intervals: List[float] = []
+        for iv in ot.script_intervals.split(","):
+            try:
+                intervals.append(float(iv.strip()))
+            except ValueError:
+                intervals.append(0.0)
+        return sum(cnt * iv for cnt, iv in zip(counts, intervals))
+
+    def _on_targets_about_to_remove(self, _parent, first: int, last: int) -> None:
+        """Subtract exposure of rows about to be deleted (rows still exist here)."""
+        for row in range(first, last + 1):
+            ot = self._tgt_model.target_at(row)
+            if ot:
+                self._summary_sec -= self._exposure_for_target(ot)
+                self._summary_count -= 1
+        self._refresh_summary_label()
+
+    def _on_targets_inserted(self, _parent, first: int, last: int) -> None:
+        """Add exposure of newly inserted rows."""
+        for row in range(first, last + 1):
+            ot = self._tgt_model.target_at(row)
+            if ot:
+                self._summary_sec += self._exposure_for_target(ot)
+                self._summary_count += 1
+        self._refresh_summary_label()
+
+    def _recalc_target_summary(self, *_args) -> None:
+        """Full recalculate – used after sort, clear, load, or cell edits."""
+        targets = self._tgt_model.get_targets()
+        self._summary_count = len(targets)
+        self._summary_sec = sum(self._exposure_for_target(ot) for ot in targets)
+        self._refresh_summary_label()
+
+    def _refresh_summary_label(self) -> None:
+        n = self._summary_count
+        total_sec = max(0.0, self._summary_sec)  # guard against floating-point drift
+        star_str = f"{n} target{'s' if n != 1 else ''}"
+        if total_sec <= 0:
+            exp_str = "—"
+        elif total_sec < 60:
+            exp_str = f"{total_sec:.0f} s"
+        elif total_sec < 3600:
+            exp_str = f"{total_sec / 60:.1f} min"
+        else:
+            h = int(total_sec // 3600)
+            m = int((total_sec % 3600) // 60)
+            exp_str = f"{h}h {m:02d}m"
+        self._tgt_summary_lbl.setText(f"{star_str}  │  Total exposure: {exp_str}")
+
+    # ── Import from file ────────────────────────────────────────────────────
+
+    def _import_from_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Variable Stars from File", "",
+            "Text Files (*.txt *.tsv);;All Files (*)",
         )
-        if dlg.exec():
-            targets = dlg.get_targets()
-            added = skipped = 0
-            for ot in targets:
-                if self._tgt_model.add_target(ot):
-                    added += 1
-                else:
-                    skipped += 1
-            parts = [f"Imported {added} target(s)"]
-            if skipped:
-                parts.append(f"{skipped} already in plan (skipped)")
-            parts.append(f"{self._tgt_model.rowCount()} total in plan")
-            self._status.showMessage("  |  ".join(parts))
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            QMessageBox.critical(self, "File Error", f"Could not read file:\n{exc}")
+            return
+
+        defaults = (
+            self._def_filter.text().strip() or self.settings.default_filters,
+            self._def_count.text().strip()  or self.settings.default_counts,
+            self._def_interval.text().strip() or self.settings.default_intervals,
+            self._def_binning.text().strip() or self.settings.default_binning,
+        )
+        targets, errors = _parse_target_text(text, defaults)
+
+        added = skipped = 0
+        for ot in targets:
+            if self._tgt_model.add_target(ot):
+                added += 1
+            else:
+                skipped += 1
+
+        parts = [f"Imported {added} target(s) from ‘{os.path.basename(path)}’"]
+        if skipped:
+            parts.append(f"{skipped} already in plan (skipped)")
+        if errors:
+            parts.append(f"{len(errors)} row(s) skipped")
+        parts.append(f"{self._tgt_model.rowCount()} total in plan")
+        self._status.showMessage("  |  ".join(parts))
+
+        if errors:
+            detail = "\n".join(f"• {e}" for e in errors[:30])
+            if len(errors) > 30:
+                detail += f"\n… and {len(errors) - 30} more"
+            QMessageBox.warning(
+                self, "Import Warnings",
+                f"Imported {added} target(s).\n"
+                f"The following rows could not be parsed:\n\n{detail}",
+            )
 
     # ── Variable list context menu ──────────────────────────────────────────
 

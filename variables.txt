@@ -1,0 +1,63 @@
+#defocus
+#platesolve
+#filteroffsets
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+BZ UMa	8.8955972222	57.8112777778
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+DI UMa	9.2045000000	50.8983888889
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+CH UMa	10.1168638889	67.5465277778
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+CI UMa	10.3036472222	71.9288888889
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+CY UMa	10.9491694444	49.6883333333
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+DO Dra	11.7273638889	71.6890555556
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+BC UMa	11.8710638889	49.2450000000
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+T CrB	15.9917111111	25.9201666667
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+AG Dra	16.0280583333	66.8028333333
+
+#filter V,B,I
+#count 4,4,4
+#interval 30,30,30
+#binning 1,1,1
+AB Dra	19.8184833333	77.7398333333
