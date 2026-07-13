@@ -7,7 +7,6 @@ from typing import List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -33,10 +32,8 @@ from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
     QSortFilterProxyModel,
-    QThread,
     Qt,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QKeySequence, QShortcut
 
@@ -634,6 +631,7 @@ class MainWindow(QMainWindow):
         self._db = Database()
         self._fetch_thread: Optional[FetchTargetsThread] = None
         self._loading_plan = False   # suppress auto-save during initial load
+        self._images_panel = None    # held open as modeless dialog
 
         self.setWindowTitle("VSTarget – AAVSO Variable Star Observation Planner")
         self.resize(1280, 800)
@@ -680,6 +678,12 @@ class MainWindow(QMainWindow):
         db_lbl.setStyleSheet("color: gray; font-size: 11px; padding: 0 6px;")
         self._status.addPermanentWidget(db_lbl)
 
+        # Working directory indicator
+        self._workdir_lbl = QLabel()
+        self._workdir_lbl.setStyleSheet("color: gray; font-size: 11px; padding: 0 6px;")
+        self._status.addPermanentWidget(self._workdir_lbl)
+        self._refresh_workdir_label()
+
         msg = f"Ready  |  Telescope: {self.settings.telescope_name}"
         if saved:
             msg += f"  |  {len(saved)} target(s) restored from previous session"
@@ -696,6 +700,12 @@ class MainWindow(QMainWindow):
         import_act.setToolTip("Import variable star targets from a .txt or .tsv file")
         import_act.triggered.connect(self._import_from_file)
         file_menu.addAction(import_act)
+
+        dl_act = QAction("&Download FITS Images…", self)
+        dl_act.setShortcut(QKeySequence("Ctrl+D"))
+        dl_act.setToolTip("Download calibrated FITS images from the iTelescope SFTP server")
+        dl_act.triggered.connect(self._open_download_dialog)
+        file_menu.addAction(dl_act)
 
         file_menu.addSeparator()
         preview_act = QAction("&Preview Script", self)
@@ -719,6 +729,28 @@ class MainWindow(QMainWindow):
         settings_act.setShortcut(QKeySequence("Ctrl+,"))
         settings_act.triggered.connect(self._open_settings)
         edit_menu.addAction(settings_act)
+
+        analysis_menu = mb.addMenu("&Analysis")
+        workdir_act = QAction("&Select Working Directory…", self)
+        workdir_act.setShortcut(QKeySequence("Ctrl+W"))
+        workdir_act.setToolTip(
+            "Choose a folder of FITS images to use as the working directory for analysis"
+        )
+        workdir_act.triggered.connect(self._select_working_directory)
+        analysis_menu.addAction(workdir_act)
+
+        clear_workdir_act = QAction("Clear Working Directory", self)
+        clear_workdir_act.triggered.connect(self._clear_working_directory)
+        analysis_menu.addAction(clear_workdir_act)
+
+        analysis_menu.addSeparator()
+        load_images_act = QAction("&Load Images…", self)
+        load_images_act.setShortcut(QKeySequence("Ctrl+L"))
+        load_images_act.setToolTip(
+            "Show a list of FITS images in the working directory"
+        )
+        load_images_act.triggered.connect(self._open_images_panel)
+        analysis_menu.addAction(load_images_act)
 
     # ── Left panel: Variable List ─────────────────────────────────────────────
 
@@ -1360,6 +1392,84 @@ class MainWindow(QMainWindow):
             m = int((total_sec % 3600) // 60)
             exp_str = f"{h}h {m:02d}m"
         self._tgt_summary_lbl.setText(f"{star_str}  │  Total exposure: {exp_str}")
+
+    # ── Import from file ────────────────────────────────────────────────────
+
+    # ── Download FITS images ───────────────────────────────────────────────
+
+    def _open_download_dialog(self) -> None:
+        from download_dialog import DownloadDialog
+        dlg = DownloadDialog(self.settings, self)
+        dlg.exec()
+
+    def _open_images_panel(self) -> None:
+        from images_panel import ImagesPanel
+        workdir = self.settings.analysis_working_dir
+        if not workdir or not os.path.isdir(workdir):
+            reply = QMessageBox.question(
+                self, "No Working Directory",
+                "No working directory is set.  Select one now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._select_working_directory()
+            workdir = self.settings.analysis_working_dir
+            if not workdir:
+                return
+        # Reuse existing panel if still open; otherwise create a new one
+        if self._images_panel is not None and not self._images_panel.isHidden():
+            self._images_panel.raise_()
+            self._images_panel.activateWindow()
+        else:
+            self._images_panel = ImagesPanel(workdir, parent=self)
+            self._images_panel.show()
+
+    # ── Analysis: working directory ──────────────────────────────────────────
+
+    def _select_working_directory(self) -> None:
+        current = self.settings.analysis_working_dir
+        start = current if os.path.isdir(current) else os.path.expanduser("~")
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Select Working Directory for Analysis", start
+        )
+        if not chosen:
+            return
+        self.settings.analysis_working_dir = chosen
+        self.settings.sync()
+        self._refresh_workdir_label()
+        # Count FITS files for a useful status message
+        fits_count = sum(
+            1 for f in os.listdir(chosen)
+            if f.lower().endswith((".fit", ".fits", ".fts"))
+        )
+        self._status.showMessage(
+            f"Working directory set: {chosen}  │  {fits_count} FITS file(s)"
+        )
+
+    def _clear_working_directory(self) -> None:
+        self.settings.analysis_working_dir = ""
+        self.settings.sync()
+        self._refresh_workdir_label()
+        self._status.showMessage("Working directory cleared.")
+
+    def _refresh_workdir_label(self) -> None:
+        path = self.settings.analysis_working_dir
+        if path and os.path.isdir(path):
+            name = os.path.basename(path.rstrip("/\\")) or path
+            self._workdir_lbl.setText(f"📂 {name}")
+            self._workdir_lbl.setToolTip(f"Working directory: {path}")
+            self._workdir_lbl.setStyleSheet(
+                "color: #0078d4; font-size: 11px; padding: 0 6px;"
+            )
+        else:
+            self._workdir_lbl.setText("No working dir")
+            self._workdir_lbl.setToolTip(
+                "No working directory set.  Use Analysis → Select Working Directory…"
+            )
+            self._workdir_lbl.setStyleSheet(
+                "color: gray; font-size: 11px; padding: 0 6px;"
+            )
 
     # ── Import from file ────────────────────────────────────────────────────
 

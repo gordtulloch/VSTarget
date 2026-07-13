@@ -1,16 +1,21 @@
 """Settings dialog: API key, telescope location, and script defaults."""
 from __future__ import annotations
 
+import os
+
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -42,6 +47,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_api_tab(), "API")
         tabs.addTab(self._build_telescope_tab(), "Telescope")
         tabs.addTab(self._build_defaults_tab(), "Script Defaults")
+        tabs.addTab(self._build_download_tab(), "Download")
         root.addWidget(tabs)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -154,7 +160,113 @@ class SettingsDialog(QDialog):
         return tab
 
     # ── Data load / save ──────────────────────────────────────────────────────
+    def _build_download_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
+        self._sftp_host = QLineEdit()
+        self._sftp_host.setPlaceholderText("data.itelescope.net")
+        form.addRow("SFTP Host:", self._sftp_host)
+
+        self._sftp_port = QSpinBox()
+        self._sftp_port.setRange(1, 65535)
+        self._sftp_port.setValue(22)
+        form.addRow("Port:", self._sftp_port)
+
+        self._sftp_user = QLineEdit()
+        self._sftp_user.setPlaceholderText("iTelescope username")
+        form.addRow("Username:", self._sftp_user)
+
+        pw_row = QHBoxLayout()
+        self._sftp_pw = QLineEdit()
+        self._sftp_pw.setEchoMode(QLineEdit.Password)
+        self._sftp_pw.setPlaceholderText("Password")
+        show_btn = QPushButton("Show")
+        show_btn.setCheckable(True)
+        show_btn.setFixedWidth(55)
+        show_btn.toggled.connect(
+            lambda on: self._sftp_pw.setEchoMode(
+                QLineEdit.Normal if on else QLineEdit.Password
+            )
+        )
+        pw_row.addWidget(self._sftp_pw)
+        pw_row.addWidget(show_btn)
+        form.addRow("Password:", pw_row)
+
+        path_row = QHBoxLayout()
+        self._sftp_path = QLineEdit()
+        self._sftp_path.setPlaceholderText("Local folder to save images")
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedWidth(75)
+        browse_btn.clicked.connect(self._browse_download_path)
+        path_row.addWidget(self._sftp_path)
+        path_row.addWidget(browse_btn)
+        form.addRow("Download to:", path_row)
+
+        self._sftp_delete = QCheckBox(
+            "Delete files from server after successful download"
+        )
+        form.addRow("", self._sftp_delete)
+
+        note = QLabel(
+            "⚠  Password is stored in plaintext by QSettings.  "
+            "Avoid using your main account password on shared machines."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray; font-size: 11px;")
+        form.addRow("", note)
+
+        # ASTAP plate solver
+        from PySide6.QtWidgets import QGroupBox as _GB
+        astap_box = _GB("Plate Solver (ASTAP)")
+        astap_form = QFormLayout(astap_box)
+        astap_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        astap_row = QHBoxLayout()
+        self._astap_path = QLineEdit()
+        self._astap_path.setPlaceholderText(
+            r"C:\Program Files\astap\astap.exe" if os.name == "nt" else "/usr/bin/astap"
+        )
+        astap_browse = QPushButton("Browse…")
+        astap_browse.setFixedWidth(75)
+        astap_browse.clicked.connect(self._browse_astap)
+        astap_detect = QPushButton("Auto-detect")
+        astap_detect.clicked.connect(self._detect_astap)
+        astap_row.addWidget(self._astap_path)
+        astap_row.addWidget(astap_browse)
+        astap_row.addWidget(astap_detect)
+        astap_form.addRow("ASTAP path:", astap_row)
+        form.addRow(astap_box)
+        return tab
+
+    def _browse_download_path(self) -> None:
+        current = self._sftp_path.text().strip()
+        start = current if os.path.isdir(current) else os.path.expanduser("~")
+        chosen = QFileDialog.getExistingDirectory(self, "Select Download Folder", start)
+        if chosen:
+            self._sftp_path.setText(chosen)
+
+    def _browse_astap(self) -> None:
+        current = self._astap_path.text().strip()
+        start = os.path.dirname(current) if current else os.path.expanduser("~")
+        ext = "Executables (*.exe)" if os.name == "nt" else "All Files (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Locate ASTAP Executable", start, ext)
+        if path:
+            self._astap_path.setText(path)
+
+    def _detect_astap(self) -> None:
+        from platesolve import find_astap
+        found = find_astap()
+        if found:
+            self._astap_path.setText(found)
+        else:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "ASTAP Not Found",
+                "ASTAP was not found on PATH or in the default installation folders.\n"
+                "Download it from https://www.hnsky.org/astap.htm"
+            )
     def _load(self) -> None:
         self._api_key_edit.setText(self.settings.api_key)
 
@@ -171,6 +283,14 @@ class SettingsDialog(QDialog):
         self._def_count.setText(self.settings.default_counts)
         self._def_interval.setText(self.settings.default_intervals)
         self._def_binning.setText(self.settings.default_binning)
+
+        self._sftp_host.setText(self.settings.sftp_host)
+        self._sftp_port.setValue(self.settings.sftp_port)
+        self._sftp_user.setText(self.settings.sftp_username)
+        self._sftp_pw.setText(self.settings.sftp_password)
+        self._sftp_path.setText(self.settings.sftp_download_path)
+        self._sftp_delete.setChecked(self.settings.sftp_delete_after)
+        self._astap_path.setText(self.settings.astap_path)
 
     def _on_preset_changed(self, name: str) -> None:
         preset = TELESCOPE_PRESETS.get(name)
@@ -191,5 +311,12 @@ class SettingsDialog(QDialog):
         self.settings.default_counts = self._def_count.text().strip()
         self.settings.default_intervals = self._def_interval.text().strip()
         self.settings.default_binning = self._def_binning.text().strip()
+        self.settings.sftp_host = self._sftp_host.text().strip()
+        self.settings.sftp_port = self._sftp_port.value()
+        self.settings.sftp_username = self._sftp_user.text().strip()
+        self.settings.sftp_password = self._sftp_pw.text()
+        self.settings.sftp_download_path = self._sftp_path.text().strip()
+        self.settings.sftp_delete_after = self._sftp_delete.isChecked()
+        self.settings.astap_path = self._astap_path.text().strip()
         self.settings.sync()
         self.accept()

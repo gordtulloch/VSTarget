@@ -1,6 +1,7 @@
 """Persistent application settings via QSettings."""
 from __future__ import annotations
 
+import os
 from typing import List
 
 from PySide6.QtCore import QSettings
@@ -147,6 +148,88 @@ class SettingsManager:
     @directive_filteroffsets.setter
     def directive_filteroffsets(self, v: bool) -> None:
         self._s.setValue("directives/filteroffsets", v)
+
+    # ── SFTP / image download ─────────────────────────────────────────────────
+
+    @property
+    def download_protocol(self) -> str:
+        """'FTP' or 'SFTP'."""
+        return self._s.value("sftp/protocol", "FTP")
+
+    @download_protocol.setter
+    def download_protocol(self, v: str) -> None:
+        self._s.setValue("sftp/protocol", v)
+
+    @property
+    def sftp_host(self) -> str:
+        return self._s.value("sftp/host", "data.itelescope.net")
+
+    @sftp_host.setter
+    def sftp_host(self, v: str) -> None:
+        self._s.setValue("sftp/host", v)
+
+    @property
+    def sftp_port(self) -> int:
+        return int(self._s.value("sftp/port", 22))
+
+    @sftp_port.setter
+    def sftp_port(self, v: int) -> None:
+        self._s.setValue("sftp/port", int(v))
+
+    @property
+    def sftp_username(self) -> str:
+        return self._s.value("sftp/username", "")
+
+    @sftp_username.setter
+    def sftp_username(self, v: str) -> None:
+        self._s.setValue("sftp/username", v)
+
+    @property
+    def sftp_password(self) -> str:
+        # NOTE: stored in plaintext via QSettings.  For higher security,
+        # migrate to the OS keychain (keyring library) in a future update.
+        return self._s.value("sftp/password", "")
+
+    @sftp_password.setter
+    def sftp_password(self, v: str) -> None:
+        self._s.setValue("sftp/password", v)
+
+    @property
+    def sftp_download_path(self) -> str:
+        import os
+        default = os.path.join(os.path.expanduser("~"), "Incoming")
+        return self._s.value("sftp/download_path", default)
+
+    @sftp_download_path.setter
+    def sftp_download_path(self, v: str) -> None:
+        self._s.setValue("sftp/download_path", v)
+
+    @property
+    def sftp_delete_after(self) -> bool:
+        return self._s.value("sftp/delete_after", False, type=bool)
+
+    @sftp_delete_after.setter
+    def sftp_delete_after(self, v: bool) -> None:
+        self._s.setValue("sftp/delete_after", v)
+
+    # ── Image analysis ─────────────────────────────────────────────────────
+
+    @property
+    def analysis_working_dir(self) -> str:
+        return self._s.value("analysis/working_dir", "")
+
+    @analysis_working_dir.setter
+    def analysis_working_dir(self, v: str) -> None:
+        self._s.setValue("analysis/working_dir", v)
+
+    @property
+    def astap_path(self) -> str:
+        default = r"C:\Program Files\astap\astap.exe" if os.name == "nt" else "/usr/bin/astap"
+        return self._s.value("analysis/astap_path", default)
+
+    @astap_path.setter
+    def astap_path(self, v: str) -> None:
+        self._s.setValue("analysis/astap_path", v)
 
     def sync(self) -> None:
         self._s.sync()
