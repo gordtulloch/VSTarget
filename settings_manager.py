@@ -1,8 +1,8 @@
 """Persistent application settings via QSettings."""
 from __future__ import annotations
 
+import json
 import os
-from typing import List
 
 from PySide6.QtCore import QSettings
 
@@ -105,14 +105,14 @@ class SettingsManager:
     # ── Download section selection ────────────────────────────────────────────
 
     @property
-    def selected_sections(self) -> List[str]:
+    def selected_sections(self) -> list[str]:
         v = self._s.value("api/sections", ["ac"])
         if isinstance(v, list):
             return v
         return [v] if v else ["ac"]
 
     @selected_sections.setter
-    def selected_sections(self, v: List[str]) -> None:
+    def selected_sections(self, v: list[str]) -> None:
         self._s.setValue("api/sections", v)
 
     # ── Global script directives ──────────────────────────────────────────────
@@ -230,6 +230,37 @@ class SettingsManager:
     @astap_path.setter
     def astap_path(self, v: str) -> None:
         self._s.setValue("analysis/astap_path", v)
+
+    # ── Exposure calibrations (per telescope + filter, JSON-encoded) ─────────
+
+    def save_exposure_calibration(self, calib_dict: dict) -> None:
+        """Store one calibration keyed by telescope + filter (overwrites)."""
+        key = f"expcal/{calib_dict['telescope']}_{calib_dict['filter_band']}"
+        self._s.setValue(key, json.dumps(calib_dict))
+
+    def load_exposure_calibration(self, telescope: str, filter_band: str) -> dict | None:
+        raw = self._s.value(f"expcal/{telescope}_{filter_band}", "")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def exposure_calibrations(self) -> list[dict]:
+        """Return every stored calibration."""
+        self._s.beginGroup("expcal")
+        try:
+            keys = self._s.childKeys()
+            out = []
+            for k in keys:
+                try:
+                    out.append(json.loads(self._s.value(k, "")))
+                except (TypeError, ValueError):
+                    continue
+            return out
+        finally:
+            self._s.endGroup()
 
     def sync(self) -> None:
         self._s.sync()

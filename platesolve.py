@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from typing import List, Optional, Tuple
 
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -33,7 +32,7 @@ _UNIX_CANDIDATES = [
 ]
 
 
-def find_astap() -> Optional[str]:
+def find_astap() -> str | None:
     """Return the path to the ASTAP executable, or ``None`` if not found.
 
     Search order:
@@ -57,13 +56,13 @@ def find_astap() -> Optional[str]:
 def platesolve_fits(
     fits_path: str,
     astap_path: str,
-    ra_hint:        Optional[float] = None,   # decimal degrees
-    dec_hint:       Optional[float] = None,   # decimal degrees
-    fov_hint:       Optional[float] = None,   # degrees
+    ra_hint:        float | None = None,   # decimal degrees
+    dec_hint:       float | None = None,   # decimal degrees
+    fov_hint:       float | None = None,   # degrees
     search_radius:  float = 90.0,             # degrees
     downsample:     int   = 0,                # 0 = auto
-    progress_cb:    Optional[callable] = None,
-) -> Tuple[bool, str]:
+    progress_cb:    callable | None = None,
+) -> tuple[bool, str]:
     """Run ASTAP to plate-solve *fits_path* and update its WCS header in-place.
 
     Parameters
@@ -88,7 +87,7 @@ def platesolve_fits(
         return False, f"FITS file not found: {fits_path}"
 
     # ── Build command ─────────────────────────────────────────────────────────
-    cmd: List[str] = [astap_path, "-f", fits_path, "-update"]
+    cmd: list[str] = [astap_path, "-f", fits_path, "-update"]
 
     # RA hint: ASTAP expects hours (0-24), not degrees
     if ra_hint is not None:
@@ -124,7 +123,7 @@ def platesolve_fits(
     except OSError as exc:
         return False, f"Failed to launch ASTAP: {exc}"
 
-    output_lines: List[str] = []
+    output_lines: list[str] = []
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
             line = line.rstrip()
@@ -171,7 +170,7 @@ def platesolve_fits(
         return False, msg
 
 
-def ra_dec_from_header(fits_path: str) -> Tuple[Optional[float], Optional[float]]:
+def ra_dec_from_header(fits_path: str) -> tuple[float | None, float | None]:
     """Extract approximate RA/Dec hints from common FITS header keywords.
 
     Returns ``(ra_deg, dec_deg)`` or ``(None, None)`` if not found.
@@ -228,9 +227,9 @@ class PlateSolveThread(QThread):
         self,
         fits_path:      str,
         astap_path:     str,
-        ra_hint:        Optional[float] = None,
-        dec_hint:       Optional[float] = None,
-        fov_hint:       Optional[float] = None,
+        ra_hint:        float | None = None,
+        dec_hint:       float | None = None,
+        fov_hint:       float | None = None,
         search_radius:  float = 90.0,
         downsample:     int   = 0,
         parent=None,

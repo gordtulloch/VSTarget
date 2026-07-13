@@ -1,6 +1,6 @@
 # VSTarget – AAVSO Variable Star Observation Planner
 
-A desktop application that downloads variable star targets from the [AAVSO Target Tool](https://targettool.aavso.org/TargetTool) and builds observation plans that can be exported as [iTelescope](https://www.itelescope.net/) ACP observing scripts.
+A desktop application that downloads variable star targets from the [AAVSO Target Tool](https://targettool.aavso.org/TargetTool) and builds observation plans that can be exported as [iTelescope](https://www.itelescope.net/) ACP observing scripts. Once the images have been taken, VSTarget can download the calibrated FITS files from iTelescope, plate-solve and stack them, and run aperture photometry to produce an AAVSO WebObs Extended-format report ready for submission.
 
 ---
 
@@ -15,23 +15,50 @@ A desktop application that downloads variable star targets from the [AAVSO Targe
 - **Live summary** – running star count and total exposure time updated incrementally as targets are added or removed
 - **Export script** – generates an iTelescope ACP `.txt` plan sorted by Right Ascension, with per-target `#filter` / `#count` / `#interval` / `#binning` directives
 - **Persistent plan** – observation plan is automatically saved to a local SQLite database and restored on next launch
-- **Settings** – configurable API key, telescope location presets (T5, T7, T11, T24, T17, T21, T30, Custom), and default script parameters
+- **Settings** – configurable API key, telescope location presets (T5, T7, T11, T24, T17, T21, T30, Custom), default script parameters, and download credentials
+
+### Image analysis
+
+- **Download FITS images** – retrieve `calibrated*.fit.zip` files from the iTelescope data server over FTP (explicit TLS with plain-FTP fallback) or SFTP, mirroring the remote folder structure and unzipping automatically
+- **Images panel** – list FITS images in a working directory with header details, WCS status, and buttons to view headers, stack, plate-solve, or analyze
+- **Plate solving** – solve images with the [ASTAP](https://www.hnsky.org/astap.htm) command-line solver, writing the WCS solution back to the FITS header
+- **Stacking** – photometric mean stacking with star registration (astroalign)
+- **Aperture photometry** – Simbad target lookup, AAVSO VSP comparison stars, ensemble linear regression, and a per-run plain-text log file
+- **AAVSO report** – results formatted as a WebObs Extended submission file that can be previewed and saved
+- **Exposure calculator** – calibrate each telescope/filter's throughput from your own images (**📏 Calibrate Exposure** in the Images panel), then let the Targets panel suggest per-target exposures sized for the star's faint end, capped so comparison stars never saturate, with a warning if the bright end could
 
 ---
 
 ## Screenshots
 
-> *(Add screenshots here once available)*
+**Downloading calibrated FITS images from iTelescope:**
+
+![Download FITS Images dialog](ftp.png)
+
+**The analysis Images panel listing calibrated frames for stacking, plate solving, and photometry:**
+
+![Analysis Images panel](analyze.png)
 
 ---
 
 ## Requirements
 
-| Requirement | Version |
-|-------------|---------|
-| Python | 3.10 or later |
-| PySide6 | 6.5.0 or later |
-| requests | 2.28.0 or later |
+| Requirement | Version | Used for |
+|-------------|---------|----------|
+| Python | 3.10 or later | |
+| PySide6 | 6.5.0 or later | User interface |
+| requests | 2.28.0 or later | AAVSO API access |
+| paramiko | 3.0.0 or later | SFTP image download |
+| astropy | 5.0 or later | FITS files, WCS, coordinates |
+| numpy | 1.22 or later | Image processing |
+| astroalign | 2.4 or later | Star registration for stacking |
+| pandas | 1.5 or later | Photometry tables |
+| photutils | 1.5 or later | Aperture photometry |
+| astroquery | 0.4.6 or later | Simbad target lookup |
+
+See [requirements.txt](requirements.txt) for the full list, including optional packages that improve stacking quality.
+
+Plate solving additionally requires the free [ASTAP](https://www.hnsky.org/astap.htm) solver (with a star database) installed separately. VSTarget looks for it on the `PATH` and in common install locations; the path can be overridden in **Settings**.
 
 ---
 
@@ -142,7 +169,8 @@ python main.py
 3. On the **API** tab, paste your AAVSO API key.
 4. On the **Telescope** tab, select a preset (e.g. *T5 – New Mexico Skies*) or choose *Custom* and enter your observatory coordinates.
 5. Optionally adjust the **Script Defaults** tab (filter, count, interval, binning).
-6. Click **OK**.
+6. To download images after your observing runs, enter your iTelescope data-server credentials on the **Download** tab.
+7. Click **OK**.
 
 Settings are stored in your OS's standard application data directory and persist across sessions.
 
@@ -213,6 +241,36 @@ SS Cyg	21.7118861111	43.5860833333
 
 Upload the `.txt` file to your iTelescope session via **Run Scripted Plan** or the reservation system's **Launch a Plan** feature.
 
+### Downloading FITS Images
+
+1. Enter your iTelescope data-server credentials on the **Download** tab of Settings.
+2. Open **File → Download FITS Images…** (`Ctrl+D`).
+3. Choose FTP (explicit TLS attempted first) or SFTP and click **Start**.
+
+The download scans the telescope folders (`T05`, `T24`, …) on the server for `calibrated*.fit.zip` files, mirrors the remote folder structure under your local download directory, unzips each file, and skips files already downloaded. Optionally the archives can be deleted from the server after a successful transfer.
+
+### Analyzing Images
+
+1. Choose **Analysis → Select Working Directory…** and point it at a folder of calibrated FITS images.
+2. Open **Analysis → Load Images…** (`Ctrl+L`) to list the images with header details and WCS status.
+3. Check one or more images, then use the panel buttons:
+   - **Header** – inspect the FITS header
+   - **🔭 Plate Solve** – solve with ASTAP and write the WCS to the header
+   - **Stack** – register and mean-combine the checked images into a new FITS file
+   - **Analyze** – run aperture photometry against AAVSO comparison stars
+
+Photometry results are shown in a report dialog formatted for AAVSO WebObs Extended submission and can be saved to a file. A detailed plain-text log of each run (`photometry_<timestamp>_<star>.log`) is written to the working directory.
+
+### Auto-calculating Exposures
+
+1. In the Images panel, check one plate-solved image and click **📏 Calibrate Exposure**. VSTarget measures the AAVSO comparison stars in the field and stores a throughput model (zeropoint, sky rate, saturation behaviour) for that telescope and filter.
+2. Repeat for each filter you use (calibrate from a V image, a B image, etc.).
+3. In the Targets panel, click **📏 Suggest Exposures from Calibration**. Each target's Interval column is sized so the star reaches a useful signal-to-noise at its *faint* end (`min mag`), subject to two safeguards:
+   - exposures are hard-capped so comparison stars (mag ≤ 11) never saturate — ensemble photometry needs them linear;
+   - a warning is shown when the target at its *bright* end (`max mag`) could saturate, so you can check its recent brightness first.
+
+Filters without a stored calibration keep their existing interval. Calibrations are per-telescope, matched to the telescope selected in Settings.
+
 ---
 
 ## Data Persistence
@@ -239,10 +297,35 @@ VSTarget/
 ├── aavso_client.py      # AAVSO REST API client + background download thread
 ├── database.py          # SQLite persistence for the observation plan
 ├── script_exporter.py   # iTelescope ACP script generator and validator
-├── settings_dialog.py   # Settings dialog (API key, telescope, defaults)
+├── settings_dialog.py   # Settings dialog (API key, telescope, defaults, download)
 ├── settings_manager.py  # QSettings wrapper for persistent preferences
+├── download_dialog.py   # FTP/SFTP image download dialog
+├── sftp_downloader.py   # FTP and SFTP download worker threads
+├── images_panel.py      # Analysis panel: list/inspect FITS images
+├── platesolve.py        # ASTAP plate-solver integration
+├── stack.py             # Photometric image stacking with star registration
+├── photometry.py        # Aperture photometry engine + WebObs report format
+├── exposure.py          # Exposure calculator: calibrate from images, suggest exposures
+├── report_dialog.py     # Photometry configuration and report dialogs
+├── notebooks/           # Reference Jupyter notebook for the photometry workflow
+├── tests/               # pytest suite for the non-GUI logic
+├── pyproject.toml       # Project tooling configuration (ruff, pytest)
 └── requirements.txt     # Python dependencies
 ```
+
+---
+
+## Development
+
+Linting ([ruff](https://docs.astral.sh/ruff/)) and tests (pytest) are configured in `pyproject.toml`:
+
+```bash
+pip install ruff pytest   # dev tools (not needed to run the app)
+ruff check .              # lint
+pytest                    # run the test suite
+```
+
+The tests cover the non-GUI logic — data models, script export, database persistence, file-import parsing, report formatting, exposure calculations, and the FTP listing parser. UI changes should be verified by launching the app.
 
 ---
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Optional
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -82,7 +81,7 @@ class _HeaderLoader(QThread):
     row_ready = Signal(int, dict)   # (row index, header dict)
     done = Signal(int)              # total rows loaded
 
-    def __init__(self, filepaths: List[str], parent=None) -> None:
+    def __init__(self, filepaths: list[str], parent=None) -> None:
         super().__init__(parent)
         self._paths = filepaths
         self._stop = False
@@ -134,10 +133,11 @@ class ImagesPanel(QDialog):
     def __init__(self, working_dir: str, parent=None) -> None:
         super().__init__(parent)
         self._working_dir = working_dir
-        self._loader: Optional[_HeaderLoader] = None
-        self._stacker = None   # StackThread – kept alive until done
-        self._analyzer = None  # PhotometryThread – kept alive until done
-        self._solver = None    # PlateSolveThread – kept alive until done
+        self._loader: _HeaderLoader | None = None
+        self._stacker = None    # StackThread – kept alive until done
+        self._analyzer = None   # PhotometryThread – kept alive until done
+        self._solver = None     # PlateSolveThread – kept alive until done
+        self._calibrator = None  # CalibrationThread – kept alive until done
 
         self.setWindowTitle("Analysis – Images")
         self.resize(1060, 560)
@@ -228,11 +228,12 @@ class ImagesPanel(QDialog):
         # ── Action buttons ────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
 
-        self._stack_btn    = QPushButton("Stack")
-        self._delete_btn   = QPushButton("Delete")
-        self._header_btn   = QPushButton("Header")
-        self._solve_btn    = QPushButton("🔭 Plate Solve")
-        self._analyze_btn  = QPushButton("Analyze")
+        self._stack_btn     = QPushButton("Stack")
+        self._delete_btn    = QPushButton("Delete")
+        self._header_btn    = QPushButton("Header")
+        self._solve_btn     = QPushButton("🔭 Plate Solve")
+        self._analyze_btn   = QPushButton("Analyze")
+        self._calibrate_btn = QPushButton("📏 Calibrate Exposure")
 
         self._stack_btn.setToolTip("Stack checked images")
         self._delete_btn.setToolTip("Delete checked images from disk")
@@ -241,18 +242,24 @@ class ImagesPanel(QDialog):
             "Plate-solve checked image(s) with ASTAP and write WCS to the FITS header"
         )
         self._analyze_btn.setToolTip("Aperture photometry + AAVSO report")
+        self._calibrate_btn.setToolTip(
+            "Measure this telescope/filter's throughput from the checked image's\n"
+            "comparison stars, for exposure suggestions in the observation plan"
+        )
 
         self._stack_btn.clicked.connect(self._on_stack)
         self._delete_btn.clicked.connect(self._on_delete)
         self._header_btn.clicked.connect(self._on_header)
         self._solve_btn.clicked.connect(self._on_plate_solve)
         self._analyze_btn.clicked.connect(self._on_analyze)
+        self._calibrate_btn.clicked.connect(self._on_calibrate)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
 
         for w in (self._stack_btn, self._delete_btn,
-                  self._header_btn, self._solve_btn, self._analyze_btn):
+                  self._header_btn, self._solve_btn, self._analyze_btn,
+                  self._calibrate_btn):
             btn_row.addWidget(w)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
@@ -379,22 +386,22 @@ class ImagesPanel(QDialog):
             if item:
                 item.setCheckState(state)
 
-    def _checked_rows(self) -> List[int]:
+    def _checked_rows(self) -> list[int]:
         return [
             r for r in range(self._table.rowCount())
             if (item := self._table.item(r, _C_CHECK))
             and item.checkState() == Qt.Checked
         ]
 
-    def _checked_paths(self) -> List[str]:
-        paths: List[str] = []
+    def _checked_paths(self) -> list[str]:
+        paths: list[str] = []
         for row in self._checked_rows():
             item = self._table.item(row, _C_FILENAME)
             if item:
                 paths.append(item.data(Qt.UserRole))
         return paths
 
-    def _require_checked(self, action: str) -> Optional[List[str]]:
+    def _require_checked(self, action: str) -> list[str] | None:
         paths = self._checked_paths()
         if not paths:
             QMessageBox.information(
@@ -685,6 +692,80 @@ class ImagesPanel(QDialog):
         self._analyze_btn.setEnabled(True)
         self._status_lbl.setText(f"✗  Analysis failed: {msg}")
         QMessageBox.critical(self, "Analysis Error", msg)
+
+    # ── Exposure calibration ──────────────────────────────────────────────────
+
+    def _on_calibrate(self) -> None:
+        from exposure import CalibrationThread
+
+        paths = self._require_checked("Calibrate Exposure")
+        if not paths:
+            return
+        if len(paths) > 1:
+            QMessageBox.information(
+                self, "Calibrate Exposure",
+                "Select exactly one plate-solved image to calibrate from.\n"
+                f"You have {len(paths)} images checked; uncheck all but one.",
+            )
+            return
+        if self._calibrator and self._calibrator.isRunning():
+            QMessageBox.information(
+                self, "Calibrate Exposure", "A calibration is already running."
+            )
+            return
+
+        self._progress.setMaximum(0)  # indeterminate
+        self._progress.setVisible(True)
+        self._calibrate_btn.setEnabled(False)
+
+        self._calibrator = CalibrationThread(paths[0], parent=self)
+        self._calibrator.status.connect(self._status_lbl.setText)
+        self._calibrator.succeeded.connect(self._on_calibration_done)
+        self._calibrator.error.connect(self._on_calibration_error)
+        self._calibrator.start()
+
+    def _on_calibration_done(self, calib) -> None:
+        from exposure import suggest_exposure
+
+        self._progress.setVisible(False)
+        self._calibrate_btn.setEnabled(True)
+
+        # Persist via the main window's SettingsManager
+        parent = self.parent()
+        saved = ""
+        if parent is not None and hasattr(parent, "settings"):
+            parent.settings.save_exposure_calibration(calib.to_dict())
+            parent.settings.sync()
+            saved = "\nSaved — the Targets panel can now suggest exposures."
+
+        preview_lines = []
+        for mag in (10.0, 12.0, 14.0, 16.0):
+            s = suggest_exposure(calib, faint_mag=mag)
+            note = "  (comp-star / max limit)" if s.capped_by_comp else ""
+            preview_lines.append(
+                f"  mag {mag:.0f} → {s.seconds}s  (S/N ≈ {s.expected_snr:.0f}){note}"
+            )
+
+        self._status_lbl.setText(
+            f"✓  Calibrated {calib.telescope}/{calib.filter_band}  "
+            f"ZP={calib.zeropoint:.2f} ±{calib.zp_rms:.2f}"
+        )
+        QMessageBox.information(
+            self, "Exposure Calibration",
+            f"Telescope    : {calib.telescope}\n"
+            f"Filter       : {calib.filter_band}\n"
+            f"Zeropoint    : {calib.zeropoint:.2f} ± {calib.zp_rms:.2f} mag "
+            f"({calib.n_stars} comp stars)\n"
+            f"Sky          : {calib.sky_rate:.2f} ADU/s/px\n"
+            f"Source image : {calib.source_image}\n\n"
+            f"Suggested exposures (S/N 50):\n" + "\n".join(preview_lines) + f"\n{saved}",
+        )
+
+    def _on_calibration_error(self, msg: str) -> None:
+        self._progress.setVisible(False)
+        self._calibrate_btn.setEnabled(True)
+        self._status_lbl.setText(f"✗  Calibration failed: {msg}")
+        QMessageBox.critical(self, "Calibration Error", msg)
 
     # ── Window close ──────────────────────────────────────────────────────────
 

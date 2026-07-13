@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -59,16 +58,16 @@ class VariableListModel(QAbstractTableModel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._data: List[AAVSOTarget] = []
+        self._data: list[AAVSOTarget] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def set_targets(self, targets: List[AAVSOTarget]) -> None:
+    def set_targets(self, targets: list[AAVSOTarget]) -> None:
         self.beginResetModel()
         self._data = targets
         self.endResetModel()
 
-    def target_at(self, row: int) -> Optional[AAVSOTarget]:
+    def target_at(self, row: int) -> AAVSOTarget | None:
         return self._data[row] if 0 <= row < len(self._data) else None
 
     # ── QAbstractTableModel interface ─────────────────────────────────────────
@@ -125,7 +124,7 @@ class VariableListModel(QAbstractTableModel):
                 return QBrush(QColor("#b87820"))
 
         elif role == Qt.ToolTipRole:
-            parts: List[str] = [f"<b>{t.star_name}</b> ({t.var_type})"]
+            parts: list[str] = [f"<b>{t.star_name}</b> ({t.var_type})"]
             if t.period is not None:
                 parts.append(f"Period: {t.period:.4f} d")
             if t.obs_cadence is not None:
@@ -167,14 +166,14 @@ class VariableFilterProxy(QSortFilterProxyModel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._active_sections: Set[str] = set()   # empty → show all sections
+        self._active_sections: set[str] = set()   # empty → show all sections
         self._search_text: str = ""
         self._priority_only: bool = False
         self._hide_solar_conj: bool = False
         self.setSortRole(Qt.UserRole)
         self.setFilterCaseSensitivity(Qt.CaseInsensitive)
 
-    def set_active_sections(self, codes: Set[str]) -> None:
+    def set_active_sections(self, codes: set[str]) -> None:
         self._active_sections = codes
         self.invalidateFilter()
 
@@ -250,16 +249,16 @@ class TargetsModel(QAbstractTableModel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._targets: List[ObservingTarget] = []
+        self._targets: list[ObservingTarget] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def set_targets(self, targets: List[ObservingTarget]) -> None:
+    def set_targets(self, targets: list[ObservingTarget]) -> None:
         self.beginResetModel()
         self._targets = list(targets)
         self.endResetModel()
 
-    def get_targets(self) -> List[ObservingTarget]:
+    def get_targets(self) -> list[ObservingTarget]:
         return list(self._targets)
 
     def add_target(self, ot: ObservingTarget) -> bool:
@@ -273,7 +272,7 @@ class TargetsModel(QAbstractTableModel):
         self.endInsertRows()
         return True
 
-    def remove_rows_by_index(self, rows: List[int]) -> None:
+    def remove_rows_by_index(self, rows: list[int]) -> None:
         for row in sorted(rows, reverse=True):
             if 0 <= row < len(self._targets):
                 self.beginRemoveRows(QModelIndex(), row, row)
@@ -328,7 +327,7 @@ class TargetsModel(QAbstractTableModel):
         )
         self.endResetModel()
 
-    def target_at(self, row: int) -> Optional[ObservingTarget]:
+    def target_at(self, row: int) -> ObservingTarget | None:
         return self._targets[row] if 0 <= row < len(self._targets) else None
 
     # ── QAbstractTableModel interface ─────────────────────────────────────────
@@ -343,9 +342,8 @@ class TargetsModel(QAbstractTableModel):
         if orientation == Qt.Horizontal:
             if role == Qt.DisplayRole:
                 return self.HEADERS[section]
-            if role == Qt.ToolTipRole:
-                if section in self._EDITABLE:
-                    return "Double-click or press F2 to edit"
+            if role == Qt.ToolTipRole and section in self._EDITABLE:
+                return "Double-click or press F2 to edit"
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
@@ -459,7 +457,7 @@ class ScriptPreviewDialog(QDialog):
 # Target file parser (module-level helpers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _split_fields(line: str) -> List[str]:
+def _split_fields(line: str) -> list[str]:
     """Split a line into [Name, Coords, Type, Mag] using the best available strategy.
 
     Tries in order:
@@ -492,7 +490,7 @@ def _split_fields(line: str) -> List[str]:
     return [line]
 
 
-def _parse_coord(coord_str: str) -> Tuple[float, float]:
+def _parse_coord(coord_str: str) -> tuple[float, float]:
     """Convert sexagesimal 'HH MM SS.ss ±DD MM SS.s' to (ra_deg, dec_deg)."""
     if not coord_str:
         raise ValueError("coordinate field is empty")
@@ -510,7 +508,7 @@ def _parse_coord(coord_str: str) -> Tuple[float, float]:
     try:
         ra_h, ra_m, ra_s = float(parts[0]), float(parts[1]), float(parts[2])
     except ValueError:
-        raise ValueError(f"non-numeric RA in {coord_str!r}")
+        raise ValueError(f"non-numeric RA in {coord_str!r}") from None
 
     if not (0.0 <= ra_h < 24.0):
         raise ValueError(
@@ -526,7 +524,7 @@ def _parse_coord(coord_str: str) -> Tuple[float, float]:
         dec_d = abs(float(dec_raw))
         dec_m, dec_s = float(parts[4]), float(parts[5])
     except ValueError:
-        raise ValueError(f"non-numeric Dec in {coord_str!r}")
+        raise ValueError(f"non-numeric Dec in {coord_str!r}") from None
 
     dec_deg = dec_d + dec_m / 60.0 + dec_s / 3600.0
     if negative:
@@ -535,7 +533,7 @@ def _parse_coord(coord_str: str) -> Tuple[float, float]:
     return ra_deg, dec_deg
 
 
-def _parse_mag(mag_str: str) -> Tuple[Optional[float], Optional[float], str]:
+def _parse_mag(mag_str: str) -> tuple[float | None, float | None, str]:
     """Parse '7.7 - 11.3 V' → (max_mag, min_mag, band).  Lenient."""
     if not mag_str:
         return None, None, ""
@@ -550,15 +548,15 @@ def _parse_mag(mag_str: str) -> Tuple[Optional[float], Optional[float], str]:
 
 def _parse_target_text(
     text: str,
-    defaults: Tuple[str, str, str, str],
-) -> Tuple[List[ObservingTarget], List[str]]:
+    defaults: tuple[str, str, str, str],
+) -> tuple[list[ObservingTarget], list[str]]:
     """Parse a tab/space-separated text block into ObservingTargets.
 
     Returns ``(targets, error_messages)``.
     """
     default_filters, default_counts, default_intervals, default_binning = defaults
-    targets: List[ObservingTarget] = []
-    errors: List[str] = []
+    targets: list[ObservingTarget] = []
+    errors: list[str] = []
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
@@ -629,7 +627,7 @@ class MainWindow(QMainWindow):
         self.settings = SettingsManager()
         self.exporter = ScriptExporter()
         self._db = Database()
-        self._fetch_thread: Optional[FetchTargetsThread] = None
+        self._fetch_thread: FetchTargetsThread | None = None
         self._loading_plan = False   # suppress auto-save during initial load
         self._images_panel = None    # held open as modeless dialog
 
@@ -1031,6 +1029,15 @@ class MainWindow(QMainWindow):
         apply_btn.clicked.connect(self._apply_defaults_to_all)
         def_grid.addWidget(apply_btn, 2, 0, 1, 4)
 
+        suggest_btn = QPushButton("📏 Suggest Exposures from Calibration")
+        suggest_btn.setToolTip(
+            "Size each target's Interval for its faint end (min mag) using the\n"
+            "exposure calibration measured in the Images panel, capped so\n"
+            "comparison stars never saturate"
+        )
+        suggest_btn.clicked.connect(self._suggest_exposures)
+        def_grid.addWidget(suggest_btn, 3, 0, 1, 4)
+
         def_box.setLayout(def_grid)
         script_vbox.addWidget(def_box)
 
@@ -1270,6 +1277,88 @@ class MainWindow(QMainWindow):
             f"Applied defaults to all {len(targets)} targets"
         )
 
+    def _suggest_exposures(self) -> None:
+        """Fill each target's Interval column from the stored exposure calibration.
+
+        Sized for the target's faint end (min_mag) at the default S/N, hard-capped
+        so comparison stars never saturate; warns when the bright end (max_mag)
+        could saturate.
+        """
+        from exposure import ExposureCalibration, normalize_telescope, suggest_exposure
+
+        targets = self._tgt_model.get_targets()
+        if not targets:
+            QMessageBox.information(
+                self, "Suggest Exposures",
+                "Add targets to the observation plan first."
+            )
+            return
+
+        telescope = normalize_telescope(self.settings.telescope_name)
+        calibs: dict[str, ExposureCalibration] = {}
+        for d in self.settings.exposure_calibrations():
+            if d.get("telescope") == telescope:
+                calibs[d.get("filter_band", "")] = ExposureCalibration.from_dict(d)
+        if not calibs:
+            QMessageBox.information(
+                self, "Suggest Exposures",
+                f"No exposure calibration stored for {telescope}.\n\n"
+                "Open Analysis → Load Images…, check a plate-solved image from "
+                "this telescope and click '📏 Calibrate Exposure' first.",
+            )
+            return
+
+        updated = 0
+        skipped: list[str] = []
+        warnings: list[str] = []
+        for ot in targets:
+            name = ot.aavso.star_name
+            faint = ot.aavso.min_mag if ot.aavso.min_mag is not None else ot.aavso.max_mag
+            if faint is None:
+                skipped.append(f"{name}: no magnitude data")
+                continue
+            bands = [b.strip() for b in ot.script_filters.split(",") if b.strip()]
+            old_ivs = [iv.strip() for iv in ot.script_intervals.split(",")]
+            new_ivs: list[str] = []
+            missing: set[str] = set()
+            changed = False
+            for i, band in enumerate(bands):
+                calib = calibs.get(band)
+                if calib is None:
+                    # Keep the existing interval for uncalibrated filters
+                    new_ivs.append(old_ivs[i] if i < len(old_ivs) else "30")
+                    missing.add(band)
+                    continue
+                sugg = suggest_exposure(
+                    calib, faint_mag=faint, bright_mag=ot.aavso.max_mag
+                )
+                new_ivs.append(str(sugg.seconds))
+                changed = True
+                warnings.extend(f"{name} ({band}): {w}" for w in sugg.warnings)
+            if missing:
+                skipped.append(
+                    f"{name}: no {telescope} calibration for {', '.join(sorted(missing))}"
+                )
+            if changed:
+                ot.script_intervals = ",".join(new_ivs)
+                updated += 1
+
+        self._tgt_model.set_targets(targets)
+        self._status.showMessage(f"Suggested exposures for {updated} target(s)")
+
+        summary = [f"Updated intervals for {updated} of {len(targets)} target(s)."]
+        if skipped:
+            summary.append("\nSkipped / partial:")
+            summary.extend(f"• {s}" for s in skipped[:10])
+            if len(skipped) > 10:
+                summary.append(f"…and {len(skipped) - 10} more")
+        if warnings:
+            summary.append("\nWarnings:")
+            summary.extend(f"⚠ {w}" for w in warnings[:10])
+            if len(warnings) > 10:
+                summary.append(f"…and {len(warnings) - 10} more")
+        QMessageBox.information(self, "Suggest Exposures", "\n".join(summary))
+
     # ── Script generation / export ────────────────────────────────────────────
 
     def _check_ready_to_export(self) -> bool:
@@ -1338,19 +1427,20 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _exposure_for_target(ot: ObservingTarget) -> float:
         """Total shutter-open time (seconds) for one target: sum(count_i * interval_i)."""
-        counts: List[int] = []
+        counts: list[int] = []
         for c in ot.script_counts.split(","):
             try:
                 counts.append(int(c.strip()))
             except ValueError:
                 counts.append(0)
-        intervals: List[float] = []
+        intervals: list[float] = []
         for iv in ot.script_intervals.split(","):
             try:
                 intervals.append(float(iv.strip()))
             except ValueError:
                 intervals.append(0.0)
-        return sum(cnt * iv for cnt, iv in zip(counts, intervals))
+        # Filter and interval lists may differ in length; pair up what we can
+        return sum(cnt * iv for cnt, iv in zip(counts, intervals, strict=False))
 
     def _on_targets_about_to_remove(self, _parent, first: int, last: int) -> None:
         """Subtract exposure of rows about to be deleted (rows still exist here)."""
@@ -1482,7 +1572,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError as exc:
             QMessageBox.critical(self, "File Error", f"Could not read file:\n{exc}")

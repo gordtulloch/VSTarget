@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -141,7 +140,7 @@ class ReportDialog(QDialog):
     def __init__(
         self,
         report_text: str,
-        log_path: Optional[str] = None,
+        log_path: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)

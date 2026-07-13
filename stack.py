@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 import numpy as np
 from astropy.io import fits
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ── FITS helper ───────────────────────────────────────────────────────────────
 
-def fits_image_data(hdul) -> Tuple[np.ndarray, object]:
+def fits_image_data(hdul) -> tuple[np.ndarray, object]:
     """Return ``(data_array, header)`` from the first image-bearing HDU."""
     for hdu in hdul:
         if (
@@ -46,10 +46,10 @@ def fits_image_data(hdul) -> Tuple[np.ndarray, object]:
 # ── Core stacking function ────────────────────────────────────────────────────
 
 def create_photometric_stack(
-    file_paths: List[str],
+    file_paths: list[str],
     output_path: str,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
-    reference_path: Optional[str] = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    reference_path: str | None = None,
 ) -> bool:
     """Create a photometry-safe light stack.
 
@@ -186,7 +186,7 @@ def create_photometric_stack(
                     return data.astype(np.float32, copy=False)
                 raise
 
-        def _try_wcs_reproject(data: np.ndarray, file_path: str) -> Optional[np.ndarray]:
+        def _try_wcs_reproject(data: np.ndarray, file_path: str) -> np.ndarray | None:
             if data.ndim != 2 or ref_full.ndim != 2:
                 return None
             try:
@@ -222,7 +222,7 @@ def create_photometric_stack(
 
         # ── Validate frames ───────────────────────────────────────────────────
 
-        valid_files: List[str] = []
+        valid_files: list[str] = []
         for i, file_path in enumerate(file_paths):
             try:
                 with fits.open(file_path) as hdul:
@@ -314,9 +314,9 @@ class StackThread(QThread):
 
     def __init__(
         self,
-        file_paths: List[str],
+        file_paths: list[str],
         output_path: str,
-        reference_path: Optional[str] = None,
+        reference_path: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)

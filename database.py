@@ -1,10 +1,10 @@
 """SQLite persistence for the VSTarget observation plan."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
-from typing import List, Optional
 
 from PySide6.QtCore import QStandardPaths
 
@@ -67,7 +67,7 @@ class Database:
     WAL mode is used efficiently in production.
     """
 
-    def __init__(self, path: Optional[str] = None) -> None:
+    def __init__(self, path: str | None = None) -> None:
         self._path = path or _default_db_path()
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -76,10 +76,8 @@ class Database:
         self._init_schema()
 
     def __del__(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._conn.close()
-        except Exception:
-            pass
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -87,7 +85,7 @@ class Database:
     def path(self) -> str:
         return self._path
 
-    def save_plan(self, targets: List[ObservingTarget]) -> None:
+    def save_plan(self, targets: list[ObservingTarget]) -> None:
         """Replace the entire saved plan with *targets* (preserves order)."""
         with self._conn:
             self._conn.execute("DELETE FROM plan_targets")
@@ -112,7 +110,7 @@ class Database:
                 [_target_to_row(i, ot) for i, ot in enumerate(targets)],
             )
 
-    def load_plan(self) -> List[ObservingTarget]:
+    def load_plan(self) -> list[ObservingTarget]:
         """Return all saved targets ordered by ``sort_order``."""
         rows = self._conn.execute(
             "SELECT * FROM plan_targets ORDER BY sort_order"

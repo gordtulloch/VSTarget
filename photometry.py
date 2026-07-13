@@ -17,7 +17,6 @@ import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -49,13 +48,13 @@ class PhotometryLog:
 
     def __init__(
         self,
-        log_dir: Optional[str],
+        log_dir: str | None,
         star_name: str,
-        progress_cb: Optional[callable] = None,
+        progress_cb: callable | None = None,
     ) -> None:
         self._cb = progress_cb
         self._fh = None
-        self.path: Optional[str] = None
+        self.path: str | None = None
 
         if log_dir:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -92,7 +91,7 @@ class PhotometryLog:
         """Emit a detail line (written to file only – no UI callback)."""
         self._write("  " + text + "\n")
 
-    def table(self, headers: List[str], rows: List[list], col_width: int = 14) -> None:
+    def table(self, headers: list[str], rows: list[list], col_width: int = 14) -> None:
         """Write a fixed-width text table."""
         sep = "-" * (col_width * len(headers) + len(headers) + 1)
         header_row = "|".join(h.ljust(col_width) for h in headers)
@@ -132,7 +131,7 @@ def download_comp_stars(
     dec: str,
     filter_band: str = "V",
     field_of_view: float = 18.5,
-) -> Tuple[List[dict], str]:
+) -> tuple[list[dict], str]:
     """Download comparison-star data from AAVSO VSP.
 
     Returns ``(stars, chart_id)`` where *stars* is a list of dicts with keys
@@ -144,7 +143,7 @@ def download_comp_stars(
     resp.raise_for_status()
     data = resp.json()
     chart_id = str(data.get("chartid", "na"))
-    stars: List[dict] = []
+    stars: list[dict] = []
     for star in data.get("photometry", []):
         comp: dict = {"auid": star["auid"], "ra": star["ra"], "dec": star["dec"]}
         for band in star.get("bands", []):
@@ -163,15 +162,32 @@ def download_comp_stars(
 
 # ── Simbad coordinate lookup ──────────────────────────────────────────────────
 
-def lookup_simbad(star_name: str) -> Tuple[str, str]:
-    """Return ``(RA_str, DEC_str)`` for *star_name* via astroquery Simbad."""
+def lookup_simbad(star_name: str) -> tuple[str, str]:
+    """Return ``(RA_str, DEC_str)`` for *star_name* via astroquery Simbad.
+
+    RA is sexagesimal hours, Dec sexagesimal degrees, space-separated
+    (e.g. ``"08 53 44.67"``, ``"57 48 40.6"``), as expected by the VSP
+    chart API and the SkyCoord parsing downstream.  Handles both astroquery
+    result layouts: ``ra``/``dec`` decimal-degree columns (>= 0.4.8) and the
+    legacy ``RA``/``DEC`` sexagesimal string columns.
+    """
     from astroquery.simbad import Simbad  # type: ignore
 
     result = Simbad.query_object(star_name)
     if result is None or len(result) == 0:
         raise ValueError(f"Simbad returned no result for '{star_name}'")
-    ra  = str(result[0]["RA"])
-    dec = str(result[0]["DEC"]).replace("+", "").replace("-", "")
+    row = result[0]
+    cols = set(result.colnames)
+    if {"ra", "dec"} <= cols:
+        sky = SkyCoord(float(row["ra"]), float(row["dec"]), unit=(u.deg, u.deg))
+    elif {"RA", "DEC"} <= cols:
+        sky = SkyCoord(str(row["RA"]), str(row["DEC"]), unit=(u.hourangle, u.deg))
+    else:
+        raise ValueError(f"Unrecognized Simbad result columns: {sorted(cols)}")
+    # No leading '+' on positive dec: these strings end up in a URL query,
+    # where '+' would decode as a space.
+    ra = sky.ra.to_string(unit=u.hour, sep=" ", precision=2, pad=True)
+    dec = sky.dec.to_string(unit=u.deg, sep=" ", precision=1, alwayssign=False)
     return ra, dec
 
 
@@ -180,7 +196,7 @@ def lookup_simbad(star_name: str) -> Tuple[str, str]:
 def extract_sources(
     data: np.ndarray,
     snr: float = 5.0,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Extract point sources.  Returns ``(sources, background_2d_array)``.
 
     Uses SEP when available; falls back to photutils DAOStarFinder.
@@ -238,7 +254,7 @@ class PhotometryResult:
     check_mag_measured: float
     check_mag_catalog:  float
     airmass:            float
-    ensemble_stars:     List[str] = field(default_factory=list)
+    ensemble_stars:     list[str] = field(default_factory=list)
     notes:              str = ""
     observer_code:      str = "UNKNOWN"
 
@@ -247,15 +263,15 @@ class PhotometryResult:
 
 def run_photometry(
     fits_path: str,
-    star_name: Optional[str]  = None,
-    filter_band: Optional[str] = None,
+    star_name: str | None  = None,
+    filter_band: str | None = None,
     comp_mag_min: float = 11.0,
     comp_mag_max: float = 13.5,
     aperture_radius: float = 6.0,
     snr_threshold: float  = 5.0,
     observer_code: str    = "UNKNOWN",
-    progress: Optional[callable] = None,
-    log_dir: Optional[str] = None,
+    progress: callable | None = None,
+    log_dir: str | None = None,
 ) -> PhotometryResult:
     """Run the full aperture-photometry pipeline and return a result.
 
@@ -387,7 +403,7 @@ def run_photometry(
 
         # ── 6. Aperture photometry ────────────────────────────────────────────
         log.section(f"Step 6 – Aperture photometry  (r = {aperture_radius} px)")
-        positions = list(zip(df["x"].values, df["y"].values))
+        positions = list(zip(df["x"].values, df["y"].values, strict=True))
         apertures = CircularAperture(positions, r=aperture_radius)
         phot      = aperture_photometry(data_sub.astype(np.float64), apertures)
 
@@ -567,29 +583,29 @@ class PhotometryThread(QThread):
     def __init__(
         self,
         fits_path:       str,
-        star_name:       Optional[str]  = None,
-        filter_band:     Optional[str]  = None,
+        star_name:       str | None  = None,
+        filter_band:     str | None  = None,
         comp_mag_min:    float = 11.0,
         comp_mag_max:    float = 13.5,
         aperture_radius: float = 6.0,
         snr_threshold:   float = 5.0,
         observer_code:   str   = "UNKNOWN",
-        log_dir:         Optional[str] = None,
+        log_dir:         str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._kwargs = dict(
-            fits_path       = fits_path,
-            star_name       = star_name,
-            filter_band     = filter_band,
-            comp_mag_min    = comp_mag_min,
-            comp_mag_max    = comp_mag_max,
-            aperture_radius = aperture_radius,
-            snr_threshold   = snr_threshold,
-            observer_code   = observer_code,
-            log_dir         = log_dir,
-            progress        = self.status.emit,
-        )
+        self._kwargs = {
+            "fits_path":       fits_path,
+            "star_name":       star_name,
+            "filter_band":     filter_band,
+            "comp_mag_min":    comp_mag_min,
+            "comp_mag_max":    comp_mag_max,
+            "aperture_radius": aperture_radius,
+            "snr_threshold":   snr_threshold,
+            "observer_code":   observer_code,
+            "log_dir":         log_dir,
+            "progress":        self.status.emit,
+        }
 
     def run(self) -> None:
         try:

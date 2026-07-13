@@ -1,13 +1,14 @@
 """FTP and SFTP download threads for retrieving calibrated FITS files from iTelescope."""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import ftplib
 import os
 import re
 import stat
 import zipfile
-from typing import Iterator, List, Tuple
+from collections.abc import Iterator
 
 import paramiko
 from PySide6.QtCore import QThread, Signal
@@ -110,7 +111,7 @@ class SFTPDownloadThread(QThread):
         # Find top-level T?? directories
         try:
             root_entries = sftp.listdir("/")
-        except IOError as exc:
+        except OSError as exc:
             self.error.emit(f"Cannot list root directory: {exc}")
             return
 
@@ -126,7 +127,7 @@ class SFTPDownloadThread(QThread):
 
         # Collect the full list before starting to download so we can show
         # accurate overall progress.
-        all_files: list[Tuple[str, str]] = []
+        all_files: list[tuple[str, str]] = []
         for td in tel_dirs:
             if self._stop:
                 break
@@ -189,10 +190,8 @@ class SFTPDownloadThread(QThread):
                 self.log.emit(f"  ERROR  downloading {remote_path}: {exc}")
                 # Remove a partial download if it exists
                 if os.path.exists(local_zip):
-                    try:
+                    with contextlib.suppress(OSError):
                         os.remove(local_zip)
-                    except OSError:
-                        pass
                 self.overall.emit(idx, total)
                 continue
 
@@ -227,14 +226,14 @@ class SFTPDownloadThread(QThread):
 
     def _walk(
         self, sftp: paramiko.SFTPClient, remote_dir: str, depth: int
-    ) -> Iterator[Tuple[str, str]]:
+    ) -> Iterator[tuple[str, str]]:
         """Recursively yield (remote_dir, filename) for files matching the
         calibrated FITS glob pattern."""
         if depth > _MAX_DEPTH:
             return
         try:
             entries = sftp.listdir_attr(remote_dir)
-        except IOError:
+        except OSError:
             return
         for entry in entries:
             if entry.st_mode is None:
@@ -300,10 +299,8 @@ class FTPDownloadThread(QThread):
         try:
             self._run_transfer(ftp)
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 ftp.quit()
-            except Exception:
-                pass
 
     # ── Connection ────────────────────────────────────────────────────────────
 
@@ -332,18 +329,14 @@ class FTPDownloadThread(QThread):
                 self.error.emit(
                     "Authentication failed (FTP 530) — check username and password."
                 )
-                try:
+                with contextlib.suppress(Exception):
                     ftp_tls.quit()
-                except Exception:
-                    pass
                 return None
             self.log.emit(f"TLS not accepted by server ({exc}); retrying plain FTP…")
         except Exception as exc:
             self.log.emit(f"TLS unavailable ({exc}); retrying plain FTP…")
-        try:
+        with contextlib.suppress(Exception):
             ftp_tls.quit()
-        except Exception:
-            pass
 
         # ── Attempt 2: plain FTP ──────────────────────────────────────────────
         try:
@@ -391,7 +384,7 @@ class FTPDownloadThread(QThread):
             f"Found {len(tel_dirs)} telescope folder(s): {', '.join(tel_dirs)}"
         )
 
-        all_files: List[Tuple[str, str]] = []
+        all_files: list[tuple[str, str]] = []
         for td in tel_dirs:
             if self._stop:
                 break
@@ -442,22 +435,21 @@ class FTPDownloadThread(QThread):
 
             try:
                 with open(local_zip, "wb") as fh:
-                    def _write(data: bytes) -> None:
+                    # Default args bind the current iteration's values explicitly
+                    def _write(data: bytes, _progress=_progress, _size=file_size) -> None:
                         fh.write(data)
                         _progress[0] += len(data)
                         self.file_bytes.emit(
                             _progress[0],
-                            file_size if file_size else _progress[0],
+                            _size if _size else _progress[0],
                         )
 
                     ftp.retrbinary(f"RETR {remote_path}", _write)
             except Exception as exc:
                 self.log.emit(f"  ERROR  downloading {remote_path}: {exc}")
                 if os.path.exists(local_zip):
-                    try:
+                    with contextlib.suppress(OSError):
                         os.remove(local_zip)
-                    except OSError:
-                        pass
                 self.overall.emit(idx, total)
                 continue
 
@@ -489,7 +481,7 @@ class FTPDownloadThread(QThread):
         )
         self.finished.emit(downloaded, skipped)
 
-    def _walk(self, ftp, remote_dir: str, depth: int) -> Iterator[Tuple[str, str]]:
+    def _walk(self, ftp, remote_dir: str, depth: int) -> Iterator[tuple[str, str]]:
         """Recursively yield (remote_dir, filename) for matching files."""
         if depth > _MAX_DEPTH:
             return

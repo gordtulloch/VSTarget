@@ -1,7 +1,6 @@
 """AAVSO Target Tool API client and background fetch thread."""
 from __future__ import annotations
 
-from typing import List, Optional
 
 import requests
 from PySide6.QtCore import QThread, Signal
@@ -23,13 +22,13 @@ class AAVSOClient:
 
     def get_targets(
         self,
-        sections: Optional[List[str]] = None,
+        sections: list[str] | None = None,
         observable: bool = False,
-        latitude: Optional[float] = None,
-        longitude: Optional[float] = None,
-        target_altitude: Optional[float] = None,
-        sun_altitude: Optional[float] = None,
-    ) -> List[AAVSOTarget]:
+        latitude: float | None = None,
+        longitude: float | None = None,
+        target_altitude: float | None = None,
+        sun_altitude: float | None = None,
+    ) -> list[AAVSOTarget]:
         """Fetch variable star targets from the API.
 
         Parameters
@@ -78,7 +77,7 @@ class FetchTargetsThread(QThread):
     def __init__(
         self,
         api_key: str,
-        sections: List[str],
+        sections: list[str],
         observable: bool,
         latitude: float,
         longitude: float,

@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 
 # Maps the obs_section display values returned by the AAVSO API to their
 # corresponding query codes used in the /targets endpoint.
-SECTION_CODES: Dict[str, str] = {
+SECTION_CODES: dict[str, str] = {
     "Alerts / Campaigns": "ac",
     "Cataclysmic Variables": "cv",
     "Eclipsing Variables": "eb",
@@ -20,12 +20,12 @@ SECTION_CODES: Dict[str, str] = {
 }
 
 # Reverse map: code → display name (used in UI checkboxes)
-SECTION_NAMES: Dict[str, str] = {v: k for k, v in SECTION_CODES.items()}
+SECTION_NAMES: dict[str, str] = {v: k for k, v in SECTION_CODES.items()}
 
 
 # Pre-configured telescope location presets.
 # Coordinates are approximate; users should verify and use "Custom" if needed.
-TELESCOPE_PRESETS: Dict[str, Dict[str, float]] = {
+TELESCOPE_PRESETS: dict[str, dict[str, float]] = {
     "T5 – New Mexico Skies (Mayhill, NM)": {
         "latitude": 32.9025,
         "longitude": -105.5319,
@@ -85,17 +85,17 @@ class AAVSOTarget:
     ra: float               # decimal degrees (from API)
     dec: float              # decimal degrees (from API)
     var_type: str = ""
-    min_mag: Optional[float] = None
+    min_mag: float | None = None
     min_mag_band: str = ""
-    max_mag: Optional[float] = None
+    max_mag: float | None = None
     max_mag_band: str = ""
-    period: Optional[float] = None
-    obs_cadence: Optional[float] = None
+    period: float | None = None
+    obs_cadence: float | None = None
     obs_mode: str = ""
-    obs_section: List[str] = field(default_factory=list)
+    obs_section: list[str] = field(default_factory=list)
     filters: str = ""       # suggested filters from AAVSO
     other_info: str = ""
-    last_data_point: Optional[int] = None
+    last_data_point: int | None = None
     priority: bool = False
     constellation: str = ""
     solar_conjunction: bool = False
@@ -106,7 +106,7 @@ class AAVSOTarget:
         return self.ra / 15.0
 
     @classmethod
-    def from_api(cls, data: Dict[str, Any]) -> "AAVSOTarget":
+    def from_api(cls, data: dict[str, Any]) -> AAVSOTarget:
         """Construct from a single entry in the AAVSO API JSON response."""
         return cls(
             star_name=data.get("star_name", ""),

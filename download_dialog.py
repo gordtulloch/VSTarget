@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -41,7 +40,7 @@ class DownloadDialog(QDialog):
     def __init__(self, settings: SettingsManager, parent=None) -> None:
         super().__init__(parent)
         self.settings = settings
-        self._thread: Optional[SFTPDownloadThread] = None
+        self._thread: SFTPDownloadThread | None = None
         self.setWindowTitle("Download FITS Images – iTelescope SFTP")
         self.setMinimumWidth(700)
         self.resize(740, 620)

@@ -1,7 +1,6 @@
 """iTelescope / ACP observing script generator."""
 from __future__ import annotations
 
-from typing import List
 
 from models import ObservingTarget
 
@@ -21,7 +20,7 @@ class ScriptExporter:
 
     def generate(
         self,
-        targets: List[ObservingTarget],
+        targets: list[ObservingTarget],
         defocus: bool = False,
         vphot: bool = False,
         platesolve: bool = False,
@@ -32,7 +31,7 @@ class ScriptExporter:
         Targets are sorted ascending by RA (as required for an efficient
         east-to-west observing run).
         """
-        lines: List[str] = []
+        lines: list[str] = []
 
         # ── Global directives ────────────────────────────────────────────────
         global_directives = []
@@ -67,13 +66,13 @@ class ScriptExporter:
 
         return "\n".join(lines)
 
-    def validate(self, targets: List[ObservingTarget]) -> List[str]:
+    def validate(self, targets: list[ObservingTarget]) -> list[str]:
         """Return a list of human-readable validation warnings.
 
         ACP requires that #filter, #count, #interval, and #binning all have
         the same number of comma-separated values.
         """
-        warnings: List[str] = []
+        warnings: list[str] = []
         for ot in targets:
             name = ot.aavso.star_name
             parts = {
