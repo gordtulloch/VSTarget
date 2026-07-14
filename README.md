@@ -31,13 +31,17 @@ A desktop application that downloads variable star targets from the [AAVSO Targe
 
 ## Screenshots
 
+**Main window — variable list and observation plan:**
+
+![Main window](screenshots/main.png)
+
 **Downloading calibrated FITS images from iTelescope:**
 
-![Download FITS Images dialog](ftp.png)
+![Download FITS Images dialog](screenshots/ftp.png)
 
 **The analysis Images panel listing calibrated frames for stacking, plate solving, and photometry:**
 
-![Analysis Images panel](analyze.png)
+![Analysis Images panel](screenshots/analyze.png)
 
 ---
 
@@ -308,6 +312,7 @@ VSTarget/
 ├── exposure.py          # Exposure calculator: calibrate from images, suggest exposures
 ├── report_dialog.py     # Photometry configuration and report dialogs
 ├── notebooks/           # Reference Jupyter notebook for the photometry workflow
+├── screenshots/         # README screenshots
 ├── tests/               # pytest suite for the non-GUI logic
 ├── pyproject.toml       # Project tooling configuration (ruff, pytest)
 └── requirements.txt     # Python dependencies
