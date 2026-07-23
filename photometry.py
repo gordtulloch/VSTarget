@@ -235,6 +235,60 @@ def extract_sources(
         return arr, back_arr
 
 
+def match_and_measure(
+    data_sub: np.ndarray,
+    sources: np.ndarray,
+    stars: list[dict],
+    wcs: WCS,
+    aperture_radius: float = 6.0,
+    match_tol_px: float = 5.0,
+) -> pd.DataFrame:
+    """Match *stars* (each with sexagesimal ``ra``/``dec``) to *sources* via WCS,
+    then run circular-aperture photometry on the matches.
+
+    *data_sub* is the background-subtracted image (i.e. ``raw_data - back_arr``
+    from :func:`extract_sources`). Mutates *stars* in place, adding ``x``,
+    ``y`` (and ``peak`` when matched). Returns a DataFrame of only the
+    matched stars, with added ``aperture_sum`` and ``instrumental_mag``
+    columns; unmatched stars are dropped.
+    """
+    for star in stars:
+        try:
+            sky = SkyCoord(star["ra"], star["dec"], unit=(u.hourangle, u.deg))
+            xy  = SkyCoord.to_pixel(sky, wcs=wcs, origin=1)
+            px, py = float(xy[0]), float(xy[1])
+        except Exception:
+            star["x"] = 0.0
+            star["y"] = 0.0
+            continue
+        matched = False
+        for src in sources:
+            if abs(float(src["x"]) - px) < match_tol_px and abs(float(src["y"]) - py) < match_tol_px:
+                star["x"]    = px
+                star["y"]    = py
+                star["peak"] = float(src["peak"])
+                matched = True
+                break
+        if not matched:
+            star["x"] = 0.0
+            star["y"] = 0.0
+
+    df = pd.DataFrame(stars)
+    df = df[df["x"] > 0].copy()
+    if df.empty:
+        return df
+
+    positions = list(zip(df["x"].values, df["y"].values, strict=True))
+    apertures = CircularAperture(positions, r=aperture_radius)
+    phot      = aperture_photometry(data_sub.astype(np.float64), apertures)
+
+    df["aperture_sum"]     = phot["aperture_sum"].value
+    df["instrumental_mag"] = df["aperture_sum"].apply(
+        lambda s: -2.5 * math.log10(max(float(s), 1e-10))
+    )
+    return df
+
+
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -359,30 +413,8 @@ def run_photometry(
         log.section("Step 5 – Match comparison stars to image sources")
         all_stars = comp_stars + [{"auid": "target", "ra": target_ra, "dec": target_dec}]
 
-        for star in all_stars:
-            try:
-                sky = SkyCoord(star["ra"], star["dec"], unit=(u.hourangle, u.deg))
-                xy  = SkyCoord.to_pixel(sky, wcs=wcs, origin=1)
-                px, py = float(xy[0]), float(xy[1])
-            except Exception:
-                star["x"] = 0.0
-                star["y"] = 0.0
-                continue
-            matched = False
-            for src in sources:
-                if abs(float(src["x"]) - px) < 5 and abs(float(src["y"]) - py) < 5:
-                    star["x"]    = px
-                    star["y"]    = py
-                    star["peak"] = float(src["peak"])
-                    matched = True
-                    break
-            if not matched:
-                star["x"] = 0.0
-                star["y"] = 0.0
-
-        df = pd.DataFrame(all_stars)
-        df = df[df["x"] > 0].copy()
-        matched_ids = list(df["auid"].values)
+        df = match_and_measure(data_sub, sources, all_stars, wcs, aperture_radius)
+        matched_ids = list(df["auid"].values) if not df.empty else []
         unmatched   = [s["auid"] for s in all_stars
                        if s["auid"] not in matched_ids and s["auid"] != "target"]
 
@@ -403,14 +435,6 @@ def run_photometry(
 
         # ── 6. Aperture photometry ────────────────────────────────────────────
         log.section(f"Step 6 – Aperture photometry  (r = {aperture_radius} px)")
-        positions = list(zip(df["x"].values, df["y"].values, strict=True))
-        apertures = CircularAperture(positions, r=aperture_radius)
-        phot      = aperture_photometry(data_sub.astype(np.float64), apertures)
-
-        df["aperture_sum"]     = phot["aperture_sum"].value
-        df["instrumental_mag"] = df["aperture_sum"].apply(
-            lambda s: -2.5 * math.log10(max(float(s), 1e-10))
-        )
         log.table(
             ["AUID", "aperture_sum", "inst_mag", "vmag (cat)"],
             [[r["auid"],

@@ -43,6 +43,30 @@ def fits_image_data(hdul) -> tuple[np.ndarray, object]:
     return hdul[0].data, hdul[0].header
 
 
+# ── Header provenance helper ──────────────────────────────────────────────────
+
+_SOLVE_MARKERS = ("pinpoint", "astap", "plate solv", "solved", "solving")
+
+
+def strip_solve_provenance(header: fits.Header) -> None:
+    """Remove plate-solve provenance cards inherited from an input frame.
+
+    The stacked image copies its header (including WCS) from an input frame,
+    but the stack itself has never been plate-solved — cards such as
+    ``PLTSOLVD`` and PinPoint/ASTAP HISTORY/COMMENT lines would falsely claim
+    a solve.  The WCS cards themselves are kept: frames are registered to the
+    reference frame, so its solution still describes the stacked geometry.
+    """
+    if "PLTSOLVD" in header:
+        del header["PLTSOLVD"]
+    for i in range(len(header) - 1, -1, -1):
+        card = header.cards[i]
+        if card.keyword in ("HISTORY", "COMMENT") and any(
+            marker in str(card.value).lower() for marker in _SOLVE_MARKERS
+        ):
+            del header[i]
+
+
 # ── Core stacking function ────────────────────────────────────────────────────
 
 def create_photometric_stack(
@@ -267,7 +291,13 @@ def create_photometric_stack(
 
         # ── Write output ──────────────────────────────────────────────────────
 
+        strip_solve_provenance(header)
         header["HISTORY"] = f"Photometric stack from {len(valid_files)} frames"
+        if "CTYPE1" in header:
+            header["HISTORY"] = (
+                f"WCS inherited from {os.path.basename(ref_path)}; "
+                "stack not independently plate-solved"
+            )
         header["NFILES"]  = len(valid_files)
         header["CREATOR"] = "VSTarget Photometric Stacking"
         header["METHOD"]  = "Registered mean (no clipping)"

@@ -93,3 +93,51 @@ def test_file_database_persists_across_connections(tmp_path):
 
     second = Database(path)
     assert [ot.aavso.star_name for ot in second.load_plan()] == ["Persisted"]
+
+
+# ── Telescope transformation coefficients ─────────────────────────────────────
+
+def test_telescopes_empty(db):
+    assert db.load_telescopes() == {}
+
+
+def test_telescopes_round_trip(db):
+    scopes = {
+        "T05": {"Tbv": 1.021, "Tv_bv": -0.052},
+        "T11": {"Tvi": 0.98},
+    }
+    db.save_telescopes(scopes)
+    assert db.load_telescopes() == scopes
+
+
+def test_telescope_without_coefficients_is_kept(db):
+    db.save_telescopes({"T24": {}})
+    assert db.load_telescopes() == {"T24": {}}
+
+
+def test_telescopes_save_replaces_all(db):
+    db.save_telescopes({"T05": {"Tbv": 1.0}, "T11": {"Tvr": 1.1}})
+    db.save_telescopes({"T05": {"Tbv": 1.5}})  # T11 deleted, T05 updated
+    assert db.load_telescopes() == {"T05": {"Tbv": 1.5}}
+
+
+def test_telescopes_ordered_by_name(db):
+    db.save_telescopes({"T30": {}, "T05": {}, "T11": {}})
+    assert list(db.load_telescopes()) == ["T05", "T11", "T30"]
+
+
+def test_telescopes_persist_across_connections(tmp_path):
+    path = str(tmp_path / "plan.db")
+    first = Database(path)
+    first.save_telescopes({"T05": {"Ti_vi": -0.033}})
+    del first
+
+    second = Database(path)
+    assert second.load_telescopes() == {"T05": {"Ti_vi": -0.033}}
+
+
+def test_telescopes_independent_of_plan(db):
+    db.save_telescopes({"T05": {"Tbv": 1.0}})
+    db.save_plan([_target("X")])
+    db.save_plan([])
+    assert db.load_telescopes() == {"T05": {"Tbv": 1.0}}

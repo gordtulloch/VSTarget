@@ -26,6 +26,15 @@ class SettingsManager:
     def api_key(self, v: str) -> None:
         self._s.setValue("api/key", v)
 
+    @property
+    def observer_code(self) -> str:
+        """AAVSO observer code (a.k.a. AAVSO ID), used on submitted reports."""
+        return self._s.value("api/observer_code", "")
+
+    @observer_code.setter
+    def observer_code(self, v: str) -> None:
+        self._s.setValue("api/observer_code", v)
+
     # ── Telescope / location ─────────────────────────────────────────────────
 
     @property
@@ -230,6 +239,15 @@ class SettingsManager:
     @astap_path.setter
     def astap_path(self, v: str) -> None:
         self._s.setValue("analysis/astap_path", v)
+
+    @property
+    def lightcurve_days(self) -> int:
+        """Days of AAVSO archive history shown in the photometry report's light-curve chart."""
+        return int(self._s.value("analysis/lightcurve_days", 10))
+
+    @lightcurve_days.setter
+    def lightcurve_days(self, v: int) -> None:
+        self._s.setValue("analysis/lightcurve_days", int(v))
 
     # ── Exposure calibrations (per telescope + filter, JSON-encoded) ─────────
 

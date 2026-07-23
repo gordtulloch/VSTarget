@@ -78,6 +78,10 @@ class SettingsDialog(QDialog):
         key_row.addWidget(show_btn)
         form.addRow("API Key:", key_row)
 
+        self._observer_code_edit = QLineEdit()
+        self._observer_code_edit.setPlaceholderText("e.g. TGOR")
+        form.addRow("AAVSO Observer Code:", self._observer_code_edit)
+
         info = QLabel(
             'Don\'t have a key? '
             '<a href="https://targettool.aavso.org/TargetTool/default/user/register">'
@@ -238,6 +242,22 @@ class SettingsDialog(QDialog):
         astap_row.addWidget(astap_detect)
         astap_form.addRow("ASTAP path:", astap_row)
         form.addRow(astap_box)
+
+        # Photometry report
+        report_box = _GB("Photometry Report")
+        report_form = QFormLayout(report_box)
+        report_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self._lightcurve_days = QSpinBox()
+        self._lightcurve_days.setRange(1, 3650)
+        self._lightcurve_days.setValue(10)
+        self._lightcurve_days.setSuffix(" days")
+        self._lightcurve_days.setToolTip(
+            "How far back to fetch AAVSO archive observations for the "
+            "light-curve chart shown after each analysis."
+        )
+        report_form.addRow("Light curve lookback:", self._lightcurve_days)
+        form.addRow(report_box)
         return tab
 
     def _browse_download_path(self) -> None:
@@ -269,6 +289,7 @@ class SettingsDialog(QDialog):
             )
     def _load(self) -> None:
         self._api_key_edit.setText(self.settings.api_key)
+        self._observer_code_edit.setText(self.settings.observer_code)
 
         name = self.settings.telescope_name
         idx = self._preset_combo.findText(name)
@@ -291,6 +312,7 @@ class SettingsDialog(QDialog):
         self._sftp_path.setText(self.settings.sftp_download_path)
         self._sftp_delete.setChecked(self.settings.sftp_delete_after)
         self._astap_path.setText(self.settings.astap_path)
+        self._lightcurve_days.setValue(self.settings.lightcurve_days)
 
     def _on_preset_changed(self, name: str) -> None:
         preset = TELESCOPE_PRESETS.get(name)
@@ -302,6 +324,7 @@ class SettingsDialog(QDialog):
 
     def _save_and_accept(self) -> None:
         self.settings.api_key = self._api_key_edit.text().strip()
+        self.settings.observer_code = self._observer_code_edit.text().strip()
         self.settings.telescope_name = self._preset_combo.currentText()
         self.settings.latitude = self._lat_spin.value()
         self.settings.longitude = self._lon_spin.value()
@@ -318,5 +341,6 @@ class SettingsDialog(QDialog):
         self.settings.sftp_download_path = self._sftp_path.text().strip()
         self.settings.sftp_delete_after = self._sftp_delete.isChecked()
         self.settings.astap_path = self._astap_path.text().strip()
+        self.settings.lightcurve_days = self._lightcurve_days.value()
         self.settings.sync()
         self.accept()

@@ -15,11 +15,22 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
+
+# ── Matplotlib (optional – graceful fallback if missing) ──────────────────────
+
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # type: ignore
+    from matplotlib.figure import Figure  # type: ignore
+    _MPL_OK = True
+except ImportError:
+    _MPL_OK = False
 
 
 # ── Configuration dialog (shown before running photometry) ────────────────────
@@ -130,22 +141,38 @@ class PhotometryConfigDialog(QDialog):
 # ── Results / report dialog ───────────────────────────────────────────────────
 
 class ReportDialog(QDialog):
-    """Display the AAVSO WebObs report and log, with save and upload options.
+    """Display the AAVSO WebObs report, analysis log, and light curve.
 
-    Shows two text areas side by side:
-    * Left  – summary + AAVSO Extended-format report (ready for WebObs upload)
-    * Right – full analysis log from the working-directory .log file
+    * Report && Log tab – the AAVSO Extended-format report (ready for WebObs
+      upload) alongside the full analysis log from the working-directory
+      .log file.
+    * Light Curve tab – AAVSO archive observations for the target/filter
+      (green) over the configured lookback window, plus this measurement
+      (red).
     """
 
     def __init__(
         self,
         report_text: str,
         log_path: str | None = None,
+        star_name: str = "",
+        filter_band: str = "V",
+        target_jd: float = 0.0,
+        target_mag: float = 0.0,
+        mag_error: float = 0.0,
+        lightcurve_days: int = 10,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._report_text = report_text
-        self._log_path    = log_path
+        self._report_text     = report_text
+        self._log_path        = log_path
+        self._star_name       = star_name
+        self._filter_band     = filter_band
+        self._target_jd       = target_jd
+        self._target_mag      = target_mag
+        self._mag_error       = mag_error
+        self._lightcurve_days = lightcurve_days
+        self._lc_thread       = None
         self.setWindowTitle("Photometry Report")
         self.setWindowFlags(
             self.windowFlags()
@@ -154,17 +181,28 @@ class ReportDialog(QDialog):
         )
         self.resize(980, 620)
         self._build_ui()
+        self._start_lightcurve_fetch()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
+        tabs = QTabWidget()
+        tabs.addTab(self._build_report_tab(), "Report && Log")
+        tabs.addTab(self._build_lightcurve_tab(), "Light Curve")
+        root.addWidget(tabs, 1)
+
+        # Action buttons
+        btn_row = self._build_button_row()
+        root.addLayout(btn_row)
+
+    def _build_report_tab(self) -> QWidget:
+        tab = QWidget()
+        panels = QHBoxLayout(tab)
+
         mono = QFont("Consolas", 9)
         mono.setStyleHint(QFont.Monospace)
-
-        # Two-panel splitter
-        panels = QHBoxLayout()
 
         # Left: AAVSO report
         left = QVBoxLayout()
@@ -202,9 +240,31 @@ class ReportDialog(QDialog):
         right.addWidget(self._log_edit, 1)
         panels.addLayout(right, 1)
 
-        root.addLayout(panels, 1)
+        return tab
 
-        # Action buttons
+    def _build_lightcurve_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self._lc_status = QLabel("")
+        self._lc_status.setStyleSheet("color: gray;")
+        layout.addWidget(self._lc_status)
+
+        if _MPL_OK:
+            self._lc_figure = Figure(figsize=(6, 4))
+            self._lc_canvas = FigureCanvasQTAgg(self._lc_figure)
+            layout.addWidget(self._lc_canvas, 1)
+        else:
+            self._lc_figure = None
+            self._lc_canvas = None
+            layout.addWidget(QLabel(
+                "matplotlib is not installed – the light-curve chart is "
+                "unavailable.\nInstall it with:  pip install matplotlib"
+            ), 1)
+
+        return tab
+
+    def _build_button_row(self) -> QHBoxLayout:
         btn_row = QHBoxLayout()
 
         save_report_btn = QPushButton("💾 Save Report…")
@@ -227,7 +287,81 @@ class ReportDialog(QDialog):
         btn_row.addWidget(webobs_btn)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
-        root.addLayout(btn_row)
+        return btn_row
+
+    # ── Light curve chart ─────────────────────────────────────────────────────
+
+    def _start_lightcurve_fetch(self) -> None:
+        if not self._star_name:
+            self._lc_status.setText("No star name available – light curve skipped.")
+            self._plot_lightcurve([])
+            return
+
+        from lightcurve import LightCurveThread
+
+        from_jd = self._target_jd - self._lightcurve_days
+        to_jd   = self._target_jd + 0.5
+
+        self._lc_status.setText(
+            f"Downloading AAVSO archive observations for {self._star_name} "
+            f"({self._filter_band}, last {self._lightcurve_days} days)…"
+        )
+        self._lc_thread = LightCurveThread(
+            star_name   = self._star_name,
+            filter_band = self._filter_band,
+            from_jd     = from_jd,
+            to_jd       = to_jd,
+            parent      = self,
+        )
+        self._lc_thread.finished.connect(self._on_lightcurve_ready)
+        self._lc_thread.error.connect(self._on_lightcurve_error)
+        self._lc_thread.start()
+
+    def _on_lightcurve_ready(self, points: list) -> None:
+        if points:
+            self._lc_status.setText(
+                f"{len(points)} AAVSO {self._filter_band}-band observation(s) "
+                f"in the last {self._lightcurve_days} days."
+            )
+        else:
+            self._lc_status.setText(
+                f"No AAVSO {self._filter_band}-band observations found in the "
+                f"last {self._lightcurve_days} days."
+            )
+        self._plot_lightcurve(points)
+
+    def _on_lightcurve_error(self, msg: str) -> None:
+        self._lc_status.setText(f"Could not download AAVSO light curve: {msg}")
+        self._plot_lightcurve([])
+
+    def _plot_lightcurve(self, points: list) -> None:
+        if not _MPL_OK:
+            return
+
+        self._lc_figure.clear()
+        ax = self._lc_figure.add_subplot(111)
+
+        if points:
+            jds  = [p.jd for p in points]
+            mags = [p.mag for p in points]
+            ax.scatter(jds, mags, c="green", s=24, label="AAVSO observations", zorder=2)
+
+        if self._target_jd:
+            ax.scatter(
+                [self._target_jd], [self._target_mag],
+                c="red", s=70, label="This measurement",
+                edgecolors="black", linewidths=0.5, zorder=3,
+            )
+
+        ax.invert_yaxis()
+        ax.set_xlabel("Julian Date")
+        ax.set_ylabel("Magnitude")
+        ax.set_title(f"{self._star_name} – {self._filter_band} band")
+        if points or self._target_jd:
+            ax.legend(loc="best", fontsize=9)
+        ax.grid(True, alpha=0.3)
+        self._lc_figure.tight_layout()
+        self._lc_canvas.draw()
 
     # ── Button handlers ───────────────────────────────────────────────────────
 

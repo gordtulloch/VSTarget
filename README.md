@@ -26,6 +26,7 @@ A desktop application that downloads variable star targets from the [AAVSO Targe
 - **Aperture photometry** – Simbad target lookup, AAVSO VSP comparison stars, ensemble linear regression, and a per-run plain-text log file
 - **AAVSO report** – results formatted as a WebObs Extended submission file that can be previewed and saved
 - **Exposure calculator** – calibrate each telescope/filter's throughput from your own images (**📏 Calibrate Exposure** in the Images panel), then let the Targets panel suggest per-target exposures sized for the star's faint end, capped so comparison stars never saturate, with a warning if the bright end could
+- **Transformation coefficient generator** – calculate AAVSO UBVRI transformation coefficients from your own standard-field images (M67, NGC 7790, M11, NGC 1252, NGC 3532, Melotte 111, or a Landolt field), with interactive per-transform outlier review
 
 ---
 
@@ -43,6 +44,14 @@ A desktop application that downloads variable star targets from the [AAVSO Targe
 
 ![Analysis Images panel](screenshots/analyze.png)
 
+**Photometry report on AG Dra measuring V = 9.818 ± 0.014, with the step-by-step analysis log:**
+
+![Photometry report on AG Dra](screenshots/report.png)
+
+**The AAVSO light curve for AG Dra — the most recent observation by other observers (mag 9.8) matches the value VSTarget measured:**
+
+![AAVSO light curve for AG Dra](screenshots/lightcurve.png)
+
 ---
 
 ## Requirements
@@ -59,6 +68,7 @@ A desktop application that downloads variable star targets from the [AAVSO Targe
 | pandas | 1.5 or later | Photometry tables |
 | photutils | 1.5 or later | Aperture photometry |
 | astroquery | 0.4.6 or later | Simbad target lookup |
+| matplotlib | 3.5 or later | Interactive transform-coefficient review plot |
 
 See [requirements.txt](requirements.txt) for the full list, including optional packages that improve stacking quality.
 
@@ -70,99 +80,184 @@ Plate solving additionally requires the free [ASTAP](https://www.hnsky.org/astap
 
 ### Prerequisites
 
-- **Python 3.10+** must be installed.
-- An **AAVSO account with API key** is required to download targets from the AAVSO Target Tool.  
-  [Register here](https://targettool.aavso.org/TargetTool/default/user/register) if you do not have one.
+- **Python 3.10 or later**
+- **Git** (to clone the repository; a downloaded ZIP works too)
+- An **AAVSO account with API key** is required to download targets from the AAVSO Target Tool.
+  [Register here](https://targettool.aavso.org/TargetTool/default/user/register) if you do not have one, then generate an API key from your account settings page.
+- **[ASTAP](https://www.hnsky.org/astap.htm)** (with a star database) is only required for plate solving — the Planning workflow and most of the Analysis workflow work without it. See [Installing ASTAP](#installing-astap-optional-required-for-plate-solving) below.
 
 ---
 
 ### Windows
 
-```powershell
-# 1. Clone or download the repository
-git clone https://github.com/your-org/VSTarget.git
-cd VSTarget
+1. **Install Python 3.10+** (skip if already installed — check with `python --version` in a terminal).
+   Download the installer from [python.org/downloads](https://www.python.org/downloads/windows/) and run it. On the first installer screen, check **"Add python.exe to PATH"** before clicking Install.
 
-# 2. Create a virtual environment
-py -m venv .venv
+2. **Install Git** (skip if already installed — check with `git --version`).
+   Download from [git-scm.com/download/win](https://git-scm.com/download/win) and run the installer with default options. Alternatively, download VSTarget as a ZIP from GitHub (**Code → Download ZIP**) and skip the `git clone` step below.
 
-# 3. Activate it
-.venv\Scripts\Activate.ps1
+3. **Clone the repository** — open PowerShell:
 
-# 4. Install dependencies
-pip install -r requirements.txt
+   ```powershell
+   git clone https://github.com/gordtulloch/VSTarget.git
+   cd VSTarget
+   ```
 
-# 5. Launch
-python main.py
-```
+4. **Create and activate a virtual environment:**
 
-> **PowerShell execution policy** – if step 3 fails with a script execution error, run:
-> ```powershell
-> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-> ```
+   ```powershell
+   py -m venv .venv
+   .venv\Scripts\Activate.ps1
+   ```
 
-To launch without activating the environment first:
-```powershell
-.venv\Scripts\python main.py
-```
+   > **PowerShell execution policy** – if activation fails with a script execution error, run this once and try again:
+   > ```powershell
+   > Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+   > ```
+
+5. **Install dependencies:**
+
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+6. **Install ASTAP** if you plan to plate-solve images — see [below](#installing-astap-optional-required-for-plate-solving).
+
+7. **Launch:**
+
+   ```powershell
+   python main.py
+   ```
+
+   You can also skip activating the environment and run it directly:
+   ```powershell
+   .venv\Scripts\python main.py
+   ```
 
 ---
 
 ### macOS
 
-```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/VSTarget.git
-cd VSTarget
+1. **Install Python 3.10+** (skip if already installed — check with `python3 --version`).
+   The system Python on macOS is too old or absent for this app; install a current version via [Homebrew](https://brew.sh/):
 
-# 2. Create a virtual environment
-python3 -m venv .venv
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"   # if Homebrew isn't installed yet
+   brew install python@3.12 git
+   ```
 
-# 3. Activate it
-source .venv/bin/activate
+   (Xcode Command Line Tools, `xcode-select --install`, provide `git` if you'd rather not install it via Homebrew.)
 
-# 4. Install dependencies
-pip install -r requirements.txt
+2. **Clone the repository:**
 
-# 5. Launch
-python main.py
-```
+   ```bash
+   git clone https://github.com/gordtulloch/VSTarget.git
+   cd VSTarget
+   ```
 
-> **macOS Gatekeeper** – PySide6 bundles its own Qt libraries and may trigger a security prompt on first run. If the app fails to start, open **System Settings → Privacy & Security** and allow the blocked item.
+3. **Create and activate a virtual environment:**
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+4. **Install dependencies:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+5. **Install ASTAP** if you plan to plate-solve images — see [below](#installing-astap-optional-required-for-plate-solving).
+
+6. **Launch:**
+
+   ```bash
+   python main.py
+   ```
+
+> **macOS Gatekeeper** – PySide6 bundles its own Qt libraries and may trigger a security prompt ("cannot be opened because the developer cannot be verified") on first run. If the app fails to start, open **System Settings → Privacy & Security**, scroll to the blocked-item notice, and click **Allow Anyway**.
+>
+> **Apple Silicon (M1/M2/M3/M4)** – all dependencies in `requirements.txt` ship native `arm64` wheels; no Rosetta translation is needed.
 
 ---
 
 ### Linux
 
-```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/VSTarget.git
-cd VSTarget
+Instructions assume a Debian/Ubuntu or Fedora/RHEL desktop; adjust package names for other distributions.
 
-# 2. Install system dependencies (if needed for Qt/OpenGL)
-# Ubuntu/Debian:
-sudo apt install libgl1 libegl1 libxcb-cursor0
+1. **Install Python 3.10+, pip, venv, and git** (most distros ship a recent enough Python — check with `python3 --version`):
 
-# Fedora/RHEL:
-sudo dnf install mesa-libGL libxcb
+   ```bash
+   # Ubuntu/Debian
+   sudo apt update
+   sudo apt install python3 python3-venv python3-pip git
 
-# 3. Create a virtual environment
-python3 -m venv .venv
+   # Fedora/RHEL
+   sudo dnf install python3 python3-pip git
+   ```
 
-# 4. Activate it
-source .venv/bin/activate
+2. **Install Qt/OpenGL runtime libraries** required by PySide6 (a minimal server/WSL install often lacks these):
 
-# 5. Install dependencies
-pip install -r requirements.txt
+   ```bash
+   # Ubuntu/Debian
+   sudo apt install libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0
 
-# 6. Launch
-python main.py
-```
+   # Fedora/RHEL
+   sudo dnf install mesa-libGL libxcb libxkbcommon-x11
+   ```
 
-> **Wayland** – if you see rendering issues on a Wayland compositor, force the XCB (X11) backend:
+3. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/gordtulloch/VSTarget.git
+   cd VSTarget
+   ```
+
+4. **Create and activate a virtual environment:**
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+5. **Install dependencies:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+6. **Install ASTAP** if you plan to plate-solve images — see [below](#installing-astap-optional-required-for-plate-solving).
+
+7. **Launch:**
+
+   ```bash
+   python main.py
+   ```
+
+> **Wayland** – if the window fails to appear or renders incorrectly under a Wayland compositor, force the XCB (X11) backend:
 > ```bash
 > QT_QPA_PLATFORM=xcb python main.py
 > ```
+
+---
+
+### Installing ASTAP (optional, required for plate solving)
+
+VSTarget shells out to the free **[ASTAP](https://www.hnsky.org/astap.htm)** command-line solver to add WCS coordinates to FITS images (**🔭 Plate Solve** in the Images panel). It is not required to plan observations, download images, stack, or run photometry on already-solved images — only for the plate-solve step itself.
+
+1. Download the ASTAP program **and** a star database (the default **D50** database, ~700 MB, covers most fields down to mag 17; use **D80** for narrower/deeper fields) from [www.hnsky.org/astap.htm](https://www.hnsky.org/astap.htm) → *Download* page, matching your OS.
+2. Install to a standard location so VSTarget finds it automatically:
+
+   | OS | Recommended install path |
+   |----|---------------------------|
+   | Windows | `C:\Program Files\astap\` (installer default) |
+   | macOS | `/opt/homebrew/bin/astap` (Homebrew) or any location added to `PATH` |
+   | Linux | `/usr/bin/astap` or `/usr/local/bin/astap` (package/manual install), or any location added to `PATH` |
+
+3. If installed elsewhere, VSTarget will not find it automatically — open **Edit → Settings** and set the **ASTAP path** explicitly to the `astap` / `astap.exe` binary.
+
+VSTarget searches, in order: the `astap`/`astap.exe` binary on `PATH`, then the standard locations above, then the `astap_path` setting.
 
 ---
 
@@ -262,8 +357,9 @@ The download scans the telescope folders (`T05`, `T24`, …) on the server for `
    - **🔭 Plate Solve** – solve with ASTAP and write the WCS to the header
    - **Stack** – register and mean-combine the checked images into a new FITS file
    - **Analyze** – run aperture photometry against AAVSO comparison stars
+   - **Delete** – permanently delete the checked images from disk (after confirmation)
 
-Photometry results are shown in a report dialog formatted for AAVSO WebObs Extended submission and can be saved to a file. A detailed plain-text log of each run (`photometry_<timestamp>_<star>.log`) is written to the working directory.
+Photometry results are shown in a report dialog formatted for AAVSO WebObs Extended submission and can be saved to a file. A detailed plain-text log of each run (`photometry_<timestamp>_<star>.log`) is written to the working directory. For a step-by-step explanation of how the measurement works — written for observers new to photometry — see [docs/Photometry.md](docs/Photometry.md).
 
 ### Auto-calculating Exposures
 
@@ -277,9 +373,27 @@ Filters without a stored calibration keep their existing interval. Calibrations 
 
 ---
 
+### Telescope Transformation Coefficients
+
+**Edit → Telescopes…** opens a table of telescopes and their photometric transformation coefficients (the full AAVSO UBVRI set — hover a column header for its meaning). Add a telescope, edit coefficient cells inline (leave blank when a coefficient has not been measured), or delete a telescope; every change is saved immediately to the plan database. The coefficients are stored for use in transformed photometry — the current photometry report is untransformed (`TRANS=NO`; see [docs/Photometry.md](docs/Photometry.md)).
+
+Coefficients can be entered by hand, or calculated automatically from your own images with the **Transformation Coefficient Generator**.
+
+### Transformation Coefficient Generator
+
+**Analysis → Transformation Coefficient Generator…** computes photometric transformation coefficients from images of an [AAVSO standard field](https://apps.aavso.org/vsd/stdfields) — M67, NGC 7790, M11, NGC 1252, NGC 3532, Melotte 111, or a Landolt field.
+
+1. Take one plate-solved, calibrated exposure of a standard field per filter (U/B/V/R/I, as many as you have).
+2. Open the generator, pick the telescope (managed in **Edit → Telescopes…**) and the standard field, and browse to each filter's image.
+3. Click **Calculate Transforms**. VSTarget downloads the field's catalog magnitudes from AAVSO VSP, measures every reference star's instrumental magnitude in each image (the same source-extraction and aperture-photometry code used for regular analysis), and least-squares fits every transform your filter combination supports.
+4. Double-click a result row to review it: a scatter plot of standard vs. instrumental colour difference lets you click individual points to include/exclude them from the fit, with the slope, error, and R² updating live.
+5. **Save to Telescope** writes the computed coefficients into the selected telescope's row, alongside any coefficients entered by hand.
+
+---
+
 ## Data Persistence
 
-The observation plan is automatically saved to a local SQLite database after every change.
+The observation plan and the telescope table are automatically saved to a local SQLite database after every change.
 
 | Platform | Default database path |
 |----------|-----------------------|
@@ -299,9 +413,10 @@ VSTarget/
 ├── main_window.py       # Main UI: Variable List, Targets panel, export
 ├── models.py            # Data classes (AAVSOTarget, ObservingTarget, presets)
 ├── aavso_client.py      # AAVSO REST API client + background download thread
-├── database.py          # SQLite persistence for the observation plan
+├── database.py          # SQLite persistence for the observation plan and telescope table
 ├── script_exporter.py   # iTelescope ACP script generator and validator
 ├── settings_dialog.py   # Settings dialog (API key, telescope, defaults, download)
+├── telescopes_dialog.py # Telescope transformation-coefficient table (CRUD)
 ├── settings_manager.py  # QSettings wrapper for persistent preferences
 ├── download_dialog.py   # FTP/SFTP image download dialog
 ├── sftp_downloader.py   # FTP and SFTP download worker threads
@@ -311,6 +426,9 @@ VSTarget/
 ├── photometry.py        # Aperture photometry engine + WebObs report format
 ├── exposure.py          # Exposure calculator: calibrate from images, suggest exposures
 ├── report_dialog.py     # Photometry configuration and report dialogs
+├── transform_generator.py        # Transformation-coefficient calculation engine
+├── transform_generator_dialog.py # Transformation Coefficient Generator UI
+├── transform_review_dialog.py    # Interactive per-transform outlier-review plot
 ├── notebooks/           # Reference Jupyter notebook for the photometry workflow
 ├── screenshots/         # README screenshots
 ├── tests/               # pytest suite for the non-GUI logic

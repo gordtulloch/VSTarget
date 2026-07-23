@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS telescopes (
+    name TEXT PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS telescope_coefficients (
+    telescope   TEXT NOT NULL REFERENCES telescopes(name) ON DELETE CASCADE,
+    coefficient TEXT NOT NULL,
+    value       REAL NOT NULL,
+    PRIMARY KEY (telescope, coefficient)
+);
+
 CREATE TABLE IF NOT EXISTS plan_targets (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     sort_order       INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +132,48 @@ class Database:
         return self._conn.execute(
             "SELECT COUNT(*) FROM plan_targets"
         ).fetchone()[0]
+
+    # ── Telescope transformation coefficients ─────────────────────────────────
+
+    def save_telescopes(self, telescopes: dict[str, dict[str, float]]) -> None:
+        """Replace all saved telescopes and their transformation coefficients.
+
+        *telescopes* maps telescope name → {coefficient name: value}.  A
+        telescope with an empty coefficient dict is kept (it exists but has
+        no coefficients recorded yet).
+        """
+        with self._conn:
+            self._conn.execute("DELETE FROM telescope_coefficients")
+            self._conn.execute("DELETE FROM telescopes")
+            self._conn.executemany(
+                "INSERT INTO telescopes (name) VALUES (?)",
+                [(name,) for name in telescopes],
+            )
+            self._conn.executemany(
+                """
+                INSERT INTO telescope_coefficients (telescope, coefficient, value)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (name, coeff, float(value))
+                    for name, coeffs in telescopes.items()
+                    for coeff, value in coeffs.items()
+                ],
+            )
+
+    def load_telescopes(self) -> dict[str, dict[str, float]]:
+        """Return all telescopes with their coefficients, ordered by name."""
+        telescopes: dict[str, dict[str, float]] = {
+            row["name"]: {}
+            for row in self._conn.execute(
+                "SELECT name FROM telescopes ORDER BY name"
+            )
+        }
+        for row in self._conn.execute(
+            "SELECT telescope, coefficient, value FROM telescope_coefficients"
+        ):
+            telescopes[row["telescope"]][row["coefficient"]] = row["value"]
+        return telescopes
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

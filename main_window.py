@@ -728,6 +728,13 @@ class MainWindow(QMainWindow):
         settings_act.triggered.connect(self._open_settings)
         edit_menu.addAction(settings_act)
 
+        telescopes_act = QAction("&Telescopes…", self)
+        telescopes_act.setToolTip(
+            "Manage telescopes and their photometric transformation coefficients"
+        )
+        telescopes_act.triggered.connect(self._open_telescopes)
+        edit_menu.addAction(telescopes_act)
+
         analysis_menu = mb.addMenu("&Analysis")
         workdir_act = QAction("&Select Working Directory…", self)
         workdir_act.setShortcut(QKeySequence("Ctrl+W"))
@@ -749,6 +756,15 @@ class MainWindow(QMainWindow):
         )
         load_images_act.triggered.connect(self._open_images_panel)
         analysis_menu.addAction(load_images_act)
+
+        analysis_menu.addSeparator()
+        transform_gen_act = QAction("&Transformation Coefficient Generator…", self)
+        transform_gen_act.setToolTip(
+            "Calculate photometric transformation coefficients from AAVSO "
+            "standard-field images"
+        )
+        transform_gen_act.triggered.connect(self._open_transform_generator)
+        analysis_menu.addAction(transform_gen_act)
 
     # ── Left panel: Variable List ─────────────────────────────────────────────
 
@@ -1069,6 +1085,16 @@ class MainWindow(QMainWindow):
             self._status.showMessage(
                 f"Settings saved  |  Telescope: {self.settings.telescope_name}"
             )
+
+    def _open_telescopes(self) -> None:
+        from telescopes_dialog import TelescopesDialog
+
+        TelescopesDialog(self._db, parent=self).exec()
+
+    def _open_transform_generator(self) -> None:
+        from transform_generator_dialog import TransformGeneratorDialog
+
+        TransformGeneratorDialog(self._db, parent=self).exec()
 
     # ── Download ──────────────────────────────────────────────────────────────
 

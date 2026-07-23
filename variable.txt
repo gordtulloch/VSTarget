@@ -1,0 +1,14 @@
+#platesolve
+#filteroffsets
+
+#filter V,B,I
+#count 4,4,4
+#interval 15,15,15
+#binning 1,1,1
+T CrB	15.9917111111	25.9201666667
+
+#filter V,B,I
+#count 4,4,4
+#interval 10,10,10
+#binning 1,1,1
+AG Dra	16.0280580000	66.8028300000

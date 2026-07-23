@@ -126,8 +126,8 @@ class ImagesPanel(QDialog):
     DATE-OBS (UT).  Header reading happens in a background thread so the UI
     remains responsive for large directories.
 
-    The four action buttons (Stack, Delete, Header, Analyze) are present but
-    not yet implemented — they operate on whichever rows are check-marked.
+    The action buttons operate on whichever rows are check-marked; only
+    Header remains a placeholder.
     """
 
     def __init__(self, working_dir: str, parent=None) -> None:
@@ -495,12 +495,38 @@ class ImagesPanel(QDialog):
 
     def _on_delete(self) -> None:
         paths = self._require_checked("Delete")
-        if paths:
-            QMessageBox.information(
-                self, "Delete – Not Implemented",
-                f"{len(paths)} image(s) selected for deletion.\n"
-                "(Deletion will be implemented in a future update.)",
+        if not paths:
+            return
+
+        names = [os.path.basename(p) for p in paths]
+        preview = "\n".join(names[:10])
+        if len(names) > 10:
+            preview += f"\n… and {len(names) - 10} more"
+        reply = QMessageBox.question(
+            self, "Delete Images",
+            f"Permanently delete {len(paths)} image(s) from disk?\n\n{preview}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        failed: list[str] = []
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError as exc:
+                failed.append(f"{os.path.basename(path)}: {exc.strerror or exc}")
+
+        deleted = len(paths) - len(failed)
+        self._status_lbl.setText(f"Deleted {deleted} image(s).")
+        if failed:
+            QMessageBox.warning(
+                self, "Delete",
+                f"Deleted {deleted} image(s); {len(failed)} could not be deleted:\n\n"
+                + "\n".join(failed),
             )
+        self._load_images()
 
     def _on_plate_solve(self) -> None:
         from platesolve import find_astap
@@ -628,13 +654,21 @@ class ImagesPanel(QDialog):
             pass
 
         # Ask the user to confirm / tweak settings
+        main_settings = getattr(self.parent(), "settings", None)
+        observer_default = main_settings.observer_code if main_settings else ""
+
         cfg = PhotometryConfigDialog(
             star_name=star_from_header,
             filter_band=filt_from_header,
+            observer_code=observer_default or "UNKNOWN",
             parent=self,
         )
         if not cfg.exec():
             return
+
+        if main_settings is not None and cfg.observer_code != observer_default:
+            main_settings.observer_code = cfg.observer_code
+            main_settings.sync()
 
         # Progress bar reused from the panel
         self._progress.setMaximum(0)  # indeterminate while each step runs
@@ -667,6 +701,8 @@ class ImagesPanel(QDialog):
         self._progress.setVisible(False)
         self._analyze_btn.setEnabled(True)
         report = format_aavso_report(result) + "\n" + format_summary(result)
+        main_settings = getattr(self.parent(), "settings", None)
+        lightcurve_days = main_settings.lightcurve_days if main_settings else 10
         dlg = ReportDialog(
             report_text = report,
             log_path    = result.fits_path and (
@@ -679,6 +715,12 @@ class ImagesPanel(QDialog):
                     None,
                 )
             ),
+            star_name       = result.star_name,
+            filter_band     = result.filter_band,
+            target_jd       = result.jd,
+            target_mag      = result.target_mag,
+            mag_error       = result.mag_error,
+            lightcurve_days = lightcurve_days,
             parent=self,
         )
         self._status_lbl.setText(
