@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
 )
 
@@ -82,6 +84,31 @@ class TransformGeneratorDialog(QDialog):
         self._aperture.setSuffix(" px")
         form.addRow("Aperture radius:", self._aperture)
 
+        self._field_radius = QDoubleSpinBox()
+        self._field_radius.setRange(1.0, 180.0)
+        self._field_radius.setValue(30.0)
+        self._field_radius.setSuffix(" arcmin")
+        self._field_radius.setToolTip(
+            "Only match reference stars within this radius of the field "
+            "centre. Keep this close to the standard field's actual size "
+            "(commonly 20-30') — wide-field images have less accurate WCS "
+            "far from centre, so matching against the full ~3 deg catalog "
+            "query radius can miss every star."
+        )
+        form.addRow("Matching field radius:", self._field_radius)
+
+        self._match_tol = QDoubleSpinBox()
+        self._match_tol.setRange(1.0, 100.0)
+        self._match_tol.setValue(5.0)
+        self._match_tol.setSuffix(" px")
+        self._match_tol.setToolTip(
+            "How close (in pixels) a catalog star's WCS-projected position "
+            "must fall to a detected source to count as a match. Raise this "
+            "if the log reports a nearest-source distance larger than the "
+            "tolerance for most stars."
+        )
+        form.addRow("Match tolerance:", self._match_tol)
+
         root.addLayout(form)
 
         landolt_hint = QLabel(
@@ -123,6 +150,12 @@ class TransformGeneratorDialog(QDialog):
         self._status_lbl.setStyleSheet("color: #555; font-size: 11px;")
         self._status_lbl.setWordWrap(True)
         root.addWidget(self._status_lbl)
+
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setFont(QFont("Consolas", 9))
+        self._log.setFixedHeight(120)
+        root.addWidget(self._log)
 
         self._results_table = QTableWidget(0, 4)
         self._results_table.setHorizontalHeaderLabels(["Transform", "Value", "Error", "R²"])
@@ -203,18 +236,25 @@ class TransformGeneratorDialog(QDialog):
         self._progress.setMaximum(0)
         self._progress.setVisible(True)
         self._status_lbl.setText("Starting…")
+        self._log.clear()
 
         self._worker = TransformGeneratorThread(
-            std_field_name   = std_field,
-            filter_images    = filter_images,
-            snr_threshold    = self._snr.value(),
-            aperture_radius  = self._aperture.value(),
-            parent           = self,
+            std_field_name       = std_field,
+            filter_images        = filter_images,
+            snr_threshold        = self._snr.value(),
+            aperture_radius      = self._aperture.value(),
+            field_radius_arcmin  = self._field_radius.value(),
+            match_tol_px         = self._match_tol.value(),
+            parent               = self,
         )
-        self._worker.status.connect(self._status_lbl.setText)
+        self._worker.status.connect(self._on_status)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()
+
+    def _on_status(self, message: str) -> None:
+        self._status_lbl.setText(message)
+        self._log.append(message)
 
     def _on_finished(self, result: TransformRunResult) -> None:
         self._progress.setVisible(False)
@@ -232,6 +272,7 @@ class TransformGeneratorDialog(QDialog):
         self._progress.setVisible(False)
         self._calc_btn.setEnabled(True)
         self._status_lbl.setText(f"✗  {message}")
+        self._log.append(f"✗  {message}")
         QMessageBox.warning(self, "Calculate Transforms", message)
 
     # ── Results table ──────────────────────────────────────────────────────────

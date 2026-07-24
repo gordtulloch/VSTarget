@@ -24,8 +24,10 @@ import logging
 import math
 from dataclasses import dataclass, field
 
+import astropy.units as u
 import numpy as np
 import requests
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
 from PySide6.QtCore import QThread, Signal
@@ -88,6 +90,36 @@ def fetch_standard_field_stars(ra_deg: float, dec_deg: float) -> list[dict]:
         stars.append(star)
     logger.info("Downloaded %d standard-field reference stars", len(stars))
     return stars
+
+
+def _filter_stars_by_radius(
+    stars: list[dict],
+    ra_deg: float,
+    dec_deg: float,
+    radius_arcmin: float,
+) -> list[dict]:
+    """Keep only *stars* within *radius_arcmin* of (ra_deg, dec_deg).
+
+    VSP's std-field chart request always queries a ~3 deg-diameter area, far
+    wider than the actual calibrated standard field (typically tens of
+    arcmin). For wide-field images, the WCS solution's positional accuracy
+    degrades away from the field centre, so matching against the full
+    catalog radius picks up stars whose WCS-projected pixel position drifts
+    past the fixed match tolerance. Restricting to the field's actual size
+    keeps matching close to the (most accurate) field centre.
+    """
+    if not stars:
+        return stars
+    center = SkyCoord(ra_deg, dec_deg, unit=u.deg)
+    kept = []
+    for star in stars:
+        try:
+            sky = SkyCoord(star["ra"], star["dec"], unit=(u.hourangle, u.deg))
+        except Exception:
+            continue
+        if center.separation(sky).arcmin <= radius_arcmin:
+            kept.append(star)
+    return kept
 
 
 # ── Transform definitions ───────────────────────────────────────────────────
@@ -233,11 +265,62 @@ def compute_transforms(
 
 # ── Per-image measurement ───────────────────────────────────────────────────
 
+def _log_match_diagnostics(
+    stars: list[dict],
+    sources: np.ndarray,
+    wcs: WCS,
+    img_shape: tuple[int, int],
+    match_tol_px: float,
+    emit: callable,
+) -> None:
+    """On a failed/near-failed match, explain *why* via the progress log.
+
+    Projects each star to pixel space (independent of ``match_and_measure``,
+    which discards this on a miss) and reports how many land inside the
+    image, plus the distance from each in-bounds star to its nearest
+    extracted source — the single most useful number for deciding whether
+    ``match_tol_px`` needs raising or the WCS solution itself is bad.
+    """
+    img_h, img_w = img_shape
+    if len(sources) == 0:
+        emit("  no sources extracted in this image — check SNR threshold")
+        return
+    src_x = np.asarray([float(s["x"]) for s in sources])
+    src_y = np.asarray([float(s["y"]) for s in sources])
+    in_bounds = 0
+    nearest: list[float] = []
+    for star in stars:
+        try:
+            sky = SkyCoord(star["ra"], star["dec"], unit=(u.hourangle, u.deg))
+            px, py = (float(v) for v in SkyCoord.to_pixel(sky, wcs=wcs, origin=1))
+        except Exception:
+            continue
+        if not (0 <= px < img_w and 0 <= py < img_h):
+            continue
+        in_bounds += 1
+        dist = float(np.min(np.hypot(src_x - px, src_y - py)))
+        nearest.append(dist)
+    emit(
+        f"  {len(sources)} sources extracted; {in_bounds}/{len(stars)} catalog "
+        f"stars project inside the {img_w}x{img_h} frame"
+    )
+    if nearest:
+        nearest.sort()
+        median = nearest[len(nearest) // 2]
+        emit(
+            f"  nearest-source distance for in-bounds stars: "
+            f"min={nearest[0]:.1f}px median={median:.1f}px "
+            f"(match tolerance is {match_tol_px:.1f}px)"
+        )
+
+
 def measure_standard_field(
     fits_path: str,
     stars: list[dict],
     snr_threshold: float = 5.0,
     aperture_radius: float = 6.0,
+    match_tol_px: float = 5.0,
+    progress: callable | None = None,
 ) -> dict[str, float]:
     """Measure raw instrumental magnitudes for *stars* in one filter image.
 
@@ -252,10 +335,44 @@ def measure_standard_field(
     wcs = WCS(header)
     sources, back_arr = extract_sources(raw_data, snr_threshold)
     data_sub = raw_data - back_arr
-    df = match_and_measure(data_sub, sources, stars, wcs, aperture_radius)
+    df = match_and_measure(data_sub, sources, stars, wcs, aperture_radius, match_tol_px)
     if df.empty:
+        if progress:
+            _log_match_diagnostics(stars, sources, wcs, raw_data.shape, match_tol_px, progress)
         return {}
     return dict(zip(df["auid"], df["instrumental_mag"], strict=True))
+
+
+def _check_field_matches_images(
+    std_field_name: str,
+    ra_deg: float,
+    dec_deg: float,
+    filter_images: dict[str, str],
+    field_radius_arcmin: float,
+) -> None:
+    """Fail fast if a supplied image's WCS centre is nowhere near the chosen
+    standard field — almost always means the wrong field was picked from the
+    dropdown (e.g. left on the default) rather than an image/photometry
+    problem, and the resulting "no matches" error otherwise gives no hint.
+    """
+    center = SkyCoord(ra_deg, dec_deg, unit=u.deg)
+    for filt, path in filter_images.items():
+        with fits.open(path) as hdul:
+            header = hdul[0].header.copy()
+            img_h, img_w = hdul[0].data.shape
+        wcs = WCS(header)
+        img_center = wcs.pixel_to_world(img_w / 2, img_h / 2)
+        img_corner = wcs.pixel_to_world(0, 0)
+        half_diag_deg = img_center.separation(img_corner).deg
+        allowed_deg = half_diag_deg + field_radius_arcmin / 60.0
+        sep_deg = center.separation(img_center).deg
+        if sep_deg > allowed_deg:
+            raise ValueError(
+                f"'{filt}' image is {sep_deg:.1f} deg from '{std_field_name}' "
+                f"(RA={ra_deg:.3f} Dec={dec_deg:.3f}) — its field centre is "
+                f"RA={img_center.ra.deg:.3f} Dec={img_center.dec.deg:.3f}. "
+                f"Check that the correct standard field is selected."
+            )
 
 
 # ── Full run ─────────────────────────────────────────────────────────────────
@@ -275,6 +392,8 @@ def run_transform_generation(
     filter_images: dict[str, str],
     snr_threshold: float = 5.0,
     aperture_radius: float = 6.0,
+    field_radius_arcmin: float = 30.0,
+    match_tol_px: float = 5.0,
     progress: callable | None = None,
 ) -> TransformRunResult:
     """Compute transformation coefficients from standard-field FITS images.
@@ -305,6 +424,24 @@ def run_transform_generation(
     if len(catalog_stars) < 3:
         raise ValueError("Fewer than 3 standard-field reference stars returned by VSP")
 
+    if std_field_name in STANDARD_FIELDS:
+        _check_field_matches_images(
+            std_field_name, ra_deg, dec_deg, filter_images, field_radius_arcmin,
+        )
+
+    if field_radius_arcmin > 0:
+        before = len(catalog_stars)
+        catalog_stars = _filter_stars_by_radius(catalog_stars, ra_deg, dec_deg, field_radius_arcmin)
+        emit(
+            f"Restricted to {len(catalog_stars)}/{before} reference stars within "
+            f"{field_radius_arcmin:.0f}' of field centre"
+        )
+        if len(catalog_stars) < 3:
+            raise ValueError(
+                f"Fewer than 3 standard-field reference stars within "
+                f"{field_radius_arcmin:.0f}' of field centre — try a larger matching field radius"
+            )
+
     merged: dict[str, dict] = {
         s["auid"]: {"auid": s["auid"], **{b: s[b] for b in _BANDS if b in s}}
         for s in catalog_stars
@@ -317,7 +454,9 @@ def run_transform_generation(
             continue
         emit(f"Measuring {filt} filter image: {path}")
         base_stars = [dict(s) for s in catalog_stars]
-        inst_mags = measure_standard_field(path, base_stars, snr_threshold, aperture_radius)
+        inst_mags = measure_standard_field(
+            path, base_stars, snr_threshold, aperture_radius, match_tol_px, emit,
+        )
         if not inst_mags:
             emit(f"WARNING: no reference stars matched in {filt} image")
             continue
@@ -364,15 +503,19 @@ class TransformGeneratorThread(QThread):
         filter_images: dict[str, str],
         snr_threshold: float = 5.0,
         aperture_radius: float = 6.0,
+        field_radius_arcmin: float = 30.0,
+        match_tol_px: float = 5.0,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._kwargs = {
-            "std_field_name":   std_field_name,
-            "filter_images":    filter_images,
-            "snr_threshold":    snr_threshold,
-            "aperture_radius":  aperture_radius,
-            "progress":         self.status.emit,
+            "std_field_name":       std_field_name,
+            "filter_images":        filter_images,
+            "snr_threshold":        snr_threshold,
+            "aperture_radius":      aperture_radius,
+            "field_radius_arcmin":  field_radius_arcmin,
+            "match_tol_px":         match_tol_px,
+            "progress":             self.status.emit,
         }
 
     def run(self) -> None:

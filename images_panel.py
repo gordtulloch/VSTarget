@@ -431,9 +431,11 @@ class ImagesPanel(QDialog):
             )
             return
 
-        # Output path: stacked_<N>frames_<timestamp>.fit in working directory
+        # Output path: stacked_<filter>_<N>frames_<timestamp>.fit in working directory
+        filt = str(_read_header(paths[0]).get("filter") or "").strip()
+        filt = "".join(c for c in filt if c.isalnum()) or "UNK"
         ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_name = f"stacked_{len(paths)}frames_{ts}.fit"
+        out_name = f"stacked_{filt}_{len(paths)}frames_{ts}.fit"
         out_path = os.path.join(self._working_dir, out_name)
 
         # Repurpose the existing progress bar for stacking progress

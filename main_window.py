@@ -1562,6 +1562,7 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
             f"Working directory set: {chosen}  │  {fits_count} FITS file(s)"
         )
+        self._open_images_panel()
 
     def _clear_working_directory(self) -> None:
         self.settings.analysis_working_dir = ""
